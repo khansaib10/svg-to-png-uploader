@@ -10,7 +10,7 @@ from googleapiclient.http import MediaFileUpload
 SVG_DIR = 'svgs'
 PNG_DIR = 'pngs'
 NUM_FILES = 5000
-DRIVE_FOLDER_ID = 'your_google_drive_folder_id'
+DRIVE_FOLDER_ID = '1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh'
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 SERVICE_ACCOUNT_FILE = 'service_account.json'
 
