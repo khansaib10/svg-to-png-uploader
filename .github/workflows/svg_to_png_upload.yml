@@ -36,4 +36,4 @@ jobs:
       run: echo "${{ secrets.SERVICE_ACCOUNT_BASE64 }}" | base64 -d > service_account.json
 
     - name: Run SVG to PNG upload script
-      run: main.py
+      run: python main.py
