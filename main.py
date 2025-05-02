@@ -40,27 +40,35 @@ def scrape_svgrepo_svg_links(limit=5000):
     svg_links = []
     page = 1
 
+    # Add a User-Agent header to mimic a browser request
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+
     while len(svg_links) < limit:
         print(f"Scraping SVGRepo page {page}...")
         url = f"{base_url}/svg/{page}/"
-        response = requests.get(url)
-        if response.status_code != 200:
-            print("Failed to load page.")
-            break
-
-        soup = BeautifulSoup(response.text, 'html.parser')
-        icons = soup.select("a[href^='/download/']")
-
-        for a in icons:
-            href = a.get("href")
-            if href.endswith(".svg"):
-                svg_links.append(base_url + href)
-
-            if len(svg_links) >= limit:
+        
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code != 200:
+                print(f"Failed to load page {page}. Status code: {response.status_code}")
                 break
 
-        page += 1
-        time.sleep(1)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            icons = soup.select("a[href^='/download/']")
+
+            for a in icons:
+                href = a.get("href")
+                if href.endswith(".svg"):
+                    svg_links.append(base_url + href)
+
+            page += 1
+            time.sleep(1)
+
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed for page {page}: {e}")
+            break
 
     return svg_links
 
