@@ -1,105 +1,118 @@
 import os
+import io
 import requests
 import cairosvg
 from bs4 import BeautifulSoup
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+import hashlib
 
-# Configs
-SVG_DIR = 'svgs'
-PNG_DIR = 'pngs'
-NUM_FILES = 5000
-DRIVE_FOLDER_ID = '1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh'
+# === CONFIGURATION ===
+OUTPUT_WIDTH = 1200
+OUTPUT_HEIGHT = 1600
+DRIVE_FOLDER_ID = '1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh'  # Replace this
+
+# === BATCHING SUPPORT ===
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", 100))
+BATCH_START = int(os.getenv("BATCH_START", 0))
+NUM_FILES = BATCH_SIZE
+
+# === SETUP GOOGLE DRIVE AUTH ===
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 SERVICE_ACCOUNT_FILE = 'service_account.json'
 
-# Set up Google Drive service
-def get_drive_service():
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-    return build('drive', 'v3', credentials=creds)
+creds = service_account.Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+drive_service = build('drive', 'v3', credentials=creds)
 
-# Scrape OpenClipart
-def scrape_svg_links():
-    print("Scraping OpenClipart...")
-    svg_links = set()
+# === FUNCTION: Upload to Google Drive ===
+def upload_to_drive(filename, filepath):
+    file_metadata = {
+        'name': filename,
+        'parents': [DRIVE_FOLDER_ID]
+    }
+    media = MediaFileUpload(filepath, mimetype='image/png')
+    uploaded_file = drive_service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields='id'
+    ).execute()
+    return uploaded_file.get('id')
+
+# === FUNCTION: Scrape SVG Links from OpenClipart ===
+def scrape_svg_links(limit=5000):
     base_url = 'https://openclipart.org'
+    search_url = f'{base_url}/recent'
+    svg_links = []
     page = 0
 
-    while len(svg_links) < NUM_FILES:
-        url = f'{base_url}/search?page={page}&query='
-        res = requests.get(url)
-        soup = BeautifulSoup(res.content, 'html.parser')
-        for a in soup.select('a[href^="/detail/"]'):
-            detail_url = base_url + a['href']
-            detail_res = requests.get(detail_url)
-            detail_soup = BeautifulSoup(detail_res.content, 'html.parser')
-            download_link = detail_soup.find('a', text='Download SVG')
-            if download_link:
-                svg_links.add(base_url + download_link['href'])
-        print(f"Page {page}: Found {len(svg_links)} links so far...")
-        if not soup.select('a[rel="next"]'):
+    while len(svg_links) < limit:
+        page_url = f"{search_url}?page={page}"
+        print(f"Scraping: {page_url}")
+        response = requests.get(page_url)
+        if response.status_code != 200:
             break
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        items = soup.select('.item a[href*="/detail/"]')
+
+        if not items:
+            break  # No more results
+
+        for a_tag in items:
+            detail_url = base_url + a_tag['href']
+            detail_resp = requests.get(detail_url)
+            if detail_resp.status_code != 200:
+                continue
+            detail_soup = BeautifulSoup(detail_resp.text, 'html.parser')
+            download_link_tag = detail_soup.find('a', href=True, text='Download SVG')
+            if download_link_tag:
+                svg_links.append(base_url + download_link_tag['href'])
+            if len(svg_links) >= limit:
+                break
         page += 1
 
-    return list(svg_links)[:NUM_FILES]
+    return svg_links
 
-# Download SVGs
-def download_svgs(svg_links):
-    os.makedirs(SVG_DIR, exist_ok=True)
-    for i, link in enumerate(svg_links):
-        filename = os.path.join(SVG_DIR, f'image_{i}.svg')
-        if os.path.exists(filename):
-            continue
+# === FUNCTION: Convert SVG to PNG ===
+def convert_svg_to_png(svg_content, output_path):
+    cairosvg.svg2png(bytestring=svg_content, write_to=output_path,
+                     output_width=OUTPUT_WIDTH, output_height=OUTPUT_HEIGHT)
+
+# === MAIN WORKFLOW ===
+def main():
+    print(f"Starting batch: {BATCH_START} to {BATCH_START + BATCH_SIZE}")
+    svg_links = scrape_svg_links(limit=5000)
+
+    batch_links = svg_links[BATCH_START:BATCH_START + NUM_FILES]
+
+    os.makedirs("output", exist_ok=True)
+
+    for idx, svg_url in enumerate(batch_links):
         try:
-            r = requests.get(link, timeout=10)
-            if r.status_code == 200:
-                with open(filename, 'wb') as f:
-                    f.write(r.content)
-                print(f"Downloaded: {filename}")
-        except Exception as e:
-            print(f"Failed to download {link}: {e}")
+            print(f"[{idx + 1}] Downloading: {svg_url}")
+            svg_resp = requests.get(svg_url)
+            if svg_resp.status_code != 200:
+                print("Failed to download SVG.")
+                continue
 
-# Convert SVG to PNG
-def convert_svgs_to_png():
-    os.makedirs(PNG_DIR, exist_ok=True)
-    for svg_file in os.listdir(SVG_DIR):
-        svg_path = os.path.join(SVG_DIR, svg_file)
-        png_path = os.path.join(PNG_DIR, svg_file.replace('.svg', '.png'))
-        if os.path.exists(png_path):
-            continue
-        try:
-            cairosvg.svg2png(
-                url=svg_path,
-                write_to=png_path,
-                output_width=1200,
-                output_height=1600,
-                background_color=None
-            )
-            print(f"Converted: {png_path}")
-        except Exception as e:
-            print(f"Failed to convert {svg_file}: {e}")
+            # Use hash of URL as unique filename
+            hash_name = hashlib.md5(svg_url.encode()).hexdigest()
+            png_filename = f"{hash_name}.png"
+            png_path = os.path.join("output", png_filename)
 
-# Upload PNG to Drive
-def upload_pngs_to_drive(service):
-    for file_name in os.listdir(PNG_DIR):
-        file_path = os.path.join(PNG_DIR, file_name)
-        file_metadata = {
-            'name': file_name,
-            'parents': [DRIVE_FOLDER_ID]
-        }
-        media = MediaFileUpload(file_path, mimetype='image/png')
-        try:
-            service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-            print(f"Uploaded: {file_name}")
-        except Exception as e:
-            print(f"Failed to upload {file_name}: {e}")
+            # Skip if already processed
+            if os.path.exists(png_path):
+                print(f"Already exists: {png_filename}")
+                continue
 
-# Main script
-if __name__ == '__main__':
-    drive_service = get_drive_service()
-    links = scrape_svg_links()
-    download_svgs(links)
-    convert_svgs_to_png()
-    upload_pngs_to_drive(drive_service)
+            convert_svg_to_png(svg_resp.content, png_path)
+            upload_to_drive(png_filename, png_path)
+            print(f"Uploaded: {png_filename}")
+
+        except Exception as e:
+            print(f"Error processing {svg_url}: {e}")
+
+if __name__ == "__main__":
+    main()
