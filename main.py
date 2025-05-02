@@ -1,131 +1,92 @@
 import os
-import requests
+import io
 import time
+import requests
 from bs4 import BeautifulSoup
-from PIL import Image
-import cairosvg
+from cairosvg import svg2png
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaIoBaseUpload
 
-# Define the Google Drive folder ID
-DRIVE_FOLDER_ID = '1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh'  # Replace with your folder ID
+# ====== CONFIG ======
+BATCH_SIZE = 50  # Change as needed
+START_INDEX = 0  # For batching
+PNG_WIDTH, PNG_HEIGHT = 1200, 1600
+GOOGLE_DRIVE_FOLDER_ID = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
+# ====================
 
-# Path to the service account credentials file
-SERVICE_ACCOUNT_FILE = 'service_account.json'
+print("Starting script...")
 
-# Define the directory for downloading the SVG files
-DOWNLOAD_DIR = 'downloads'
-
-# Create the directory if it doesn't exist
-if not os.path.exists(DOWNLOAD_DIR):
-    os.makedirs(DOWNLOAD_DIR)
-
-# Initialize the Google Drive API client
+# Authenticate Google Drive
 def get_drive_service():
-    print("Initializing Google Drive service...")
-    creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=["https://www.googleapis.com/auth/drive.file"])
-    drive_service = build('drive', 'v3', credentials=creds)
-    return drive_service
+    print("Authenticating Google Drive...")
+    creds = service_account.Credentials.from_service_account_file("service_account.json", scopes=["https://www.googleapis.com/auth/drive"])
+    return build("drive", "v3", credentials=creds)
 
-# Function to upload files to Google Drive
-def upload_file_to_drive(file_path, folder_id):
-    print(f"Uploading {file_path} to Google Drive folder {folder_id}...")
-    drive_service = get_drive_service()
-    file_metadata = {'name': os.path.basename(file_path), 'parents': [folder_id]}
-    media = MediaFileUpload(file_path, mimetype='image/png')
-    try:
-        file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        print(f"Successfully uploaded {file_path} with file ID: {file['id']}")
-    except Exception as e:
-        print(f"Error uploading {file_path}: {e}")
+# Upload PNG to Drive
+def upload_to_drive(service, file_name, file_data):
+    file_metadata = {
+        "name": file_name,
+        "parents": [GOOGLE_DRIVE_FOLDER_ID]
+    }
+    media = MediaIoBaseUpload(io.BytesIO(file_data), mimetype="image/png")
+    uploaded_file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+    print(f"Uploaded: {file_name} (ID: {uploaded_file.get('id')})")
 
-# Function to convert SVG to PNG
-def convert_svg_to_png(svg_file_path, png_file_path):
-    print(f"Converting {svg_file_path} to {png_file_path}...")
-    cairosvg.svg2png(url=svg_file_path, write_to=png_file_path)
-    print(f"Successfully converted {svg_file_path} to {png_file_path}")
-
-# Function to scrape SVGRepo for SVG links
-def scrape_svgrepo_svg_links(limit=5000, retries=3):
-    base_url = 'https://www.svgrepo.com'
-    svg_links = []
+# Scrape popular SVG links
+def scrape_svgrepo_popular_links(limit=5000):
+    print("Scraping popular SVGs...")
+    base_url = "https://www.svgrepo.com/vectors/popular/"
+    links = []
     page = 1
-
-    while len(svg_links) < limit:
-        print(f"Scraping SVGRepo page {page}...")
-        url = f"{base_url}/svg/{page}/"
-
-        attempt = 0
-        while attempt < retries:
-            try:
-                print(f"Fetching: {url}")
-                response = requests.get(url, timeout=30)  # Increased timeout
-                if response.status_code == 200:
-                    print(f"Successfully loaded page {page}")
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    icons = soup.select("a[href^='/download/']")
-                    for a in icons:
-                        href = a.get("href")
-                        if href.endswith(".svg"):
-                            svg_links.append(base_url + href)
-                    page += 1
-                    break
-                else:
-                    print(f"Failed to load page {page}. Status code: {response.status_code}")
-                    time.sleep(5)
-            except requests.exceptions.RequestException as e:
-                print(f"Request failed for page {page}: {e}")
-                attempt += 1
-                time.sleep(5)
-
-        if attempt == retries:
-            print(f"Giving up on page {page} after {retries} attempts.")
+    while len(links) < limit:
+        url = f"{base_url}?page={page}"
+        print(f"Fetching: {url}")
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Failed to load page {page}. Status code: {response.status_code}")
             break
+        soup = BeautifulSoup(response.text, "html.parser")
+        cards = soup.select("a.cursor-pointer")
+        if not cards:
+            print("No more SVGs found.")
+            break
+        for card in cards:
+            href = card.get("href", "")
+            if href.startswith("/svg/"):
+                svg_url = f"https://www.svgrepo.com{href}download"
+                links.append(svg_url)
+                if len(links) >= limit:
+                    break
+        page += 1
+    print(f"Total SVGs found: {len(links)}")
+    return links
 
-    print(f"Found {len(svg_links)} SVG links.")
-    return svg_links
-
-# Function to download SVG files
-def download_svg(svg_url, filename):
-    print(f"Downloading SVG: {svg_url}...")
+# Convert SVG to PNG bytes
+def convert_svg_to_png(svg_url):
     try:
         response = requests.get(svg_url)
-        if response.status_code == 200:
-            with open(filename, 'wb') as f:
-                f.write(response.content)
-            print(f"Downloaded SVG to {filename}")
-        else:
-            print(f"Failed to download {svg_url}. Status code: {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        print(f"Error downloading {svg_url}: {e}")
+        if response.status_code != 200:
+            print(f"Failed to download SVG: {svg_url}")
+            return None
+        png_bytes = svg2png(bytestring=response.content, output_width=PNG_WIDTH, output_height=PNG_HEIGHT)
+        return png_bytes
+    except Exception as e:
+        print(f"Error converting {svg_url}: {e}")
+        return None
 
-# Main function to orchestrate the download, convert, and upload process
+# Main process
 def main():
-    print("Starting script...")
-    svg_links = scrape_svgrepo_svg_links(limit=5000)
-
-    # Download, convert, and upload the SVGs
-    for index, svg_url in enumerate(svg_links):
-        print(f"Processing SVG {index + 1} of {len(svg_links)}...")
-        try:
-            svg_filename = os.path.join(DOWNLOAD_DIR, f"image_{index + 1}.svg")
-            download_svg(svg_url, svg_filename)
-
-            png_filename = svg_filename.replace('.svg', '.png')
-            convert_svg_to_png(svg_filename, png_filename)
-
-            upload_file_to_drive(png_filename, DRIVE_FOLDER_ID)
-
-            # Optional: Clean up downloaded SVG and PNG files after upload
-            os.remove(svg_filename)
-            os.remove(png_filename)
-
-            print(f"Completed processing for image {index + 1}.")
-        except Exception as e:
-            print(f"Error processing SVG {index + 1}: {e}")
-
-    print("Script completed.")
+    print(f"Starting batch: {START_INDEX} to {START_INDEX + BATCH_SIZE}")
+    drive_service = get_drive_service()
+    svg_links = scrape_svgrepo_popular_links(limit=START_INDEX + BATCH_SIZE)
+    for i, svg_url in enumerate(svg_links[START_INDEX:START_INDEX + BATCH_SIZE]):
+        print(f"[{i+1}] Downloading and converting: {svg_url}")
+        png_data = convert_svg_to_png(svg_url)
+        if png_data:
+            file_name = f"svgrepo_{START_INDEX + i + 1}.png"
+            upload_to_drive(drive_service, file_name, png_data)
+        time.sleep(1)  # to be gentle to the server
 
 if __name__ == "__main__":
     main()
