@@ -1,92 +1,105 @@
 import os
-import time
 import requests
-from io import BytesIO
-from PIL import Image
 import cairosvg
+from bs4 import BeautifulSoup
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# --- Config ---
-SVGREPO_API_KEY = os.getenv("SVGREPO_API_KEY")
-DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
+# Configs
+SVG_DIR = 'svgs'
+PNG_DIR = 'pngs'
+NUM_FILES = 5000
+DRIVE_FOLDER_ID = 'your_google_drive_folder_id'
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+SERVICE_ACCOUNT_FILE = 'service_account.json'
 
-if not SVGREPO_API_KEY or not DRIVE_FOLDER_ID:
-    raise Exception("Missing SVGREPO_API_KEY or DRIVE_FOLDER_ID env variable")
-
-# --- Google Drive Auth ---
-def auth_drive():
+# Set up Google Drive service
+def get_drive_service():
     creds = service_account.Credentials.from_service_account_file(
-        "service_account.json",
-        scopes=["https://www.googleapis.com/auth/drive.file"]
-    )
-    return build("drive", "v3", credentials=creds)
+        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    return build('drive', 'v3', credentials=creds)
 
-def upload_to_drive(filepath, filename):
-    service = auth_drive()
-    file_metadata = {
-        "name": filename,
-        "parents": [DRIVE_FOLDER_ID],
-    }
-    media = MediaFileUpload(filepath, mimetype="image/png")
-    uploaded_file = service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields="id"
-    ).execute()
-    return uploaded_file.get("id")
+# Scrape OpenClipart
+def scrape_svg_links():
+    print("Scraping OpenClipart...")
+    svg_links = set()
+    base_url = 'https://openclipart.org'
+    page = 0
 
-# --- Download SVGs from SVGRepo ---
-def get_random_svgs(limit=10):
-    url = f"https://www.svgrepo.com/api/v1/search/?query=vector&limit={limit}"
-    headers = {"Authorization": f"Token {SVGREPO_API_KEY}"}
-    response = requests.get(url, headers=headers, timeout=10)
-    response.raise_for_status()
-    return response.json().get("data", [])
+    while len(svg_links) < NUM_FILES:
+        url = f'{base_url}/search?page={page}&query='
+        res = requests.get(url)
+        soup = BeautifulSoup(res.content, 'html.parser')
+        for a in soup.select('a[href^="/detail/"]'):
+            detail_url = base_url + a['href']
+            detail_res = requests.get(detail_url)
+            detail_soup = BeautifulSoup(detail_res.content, 'html.parser')
+            download_link = detail_soup.find('a', text='Download SVG')
+            if download_link:
+                svg_links.add(base_url + download_link['href'])
+        print(f"Page {page}: Found {len(svg_links)} links so far...")
+        if not soup.select('a[rel="next"]'):
+            break
+        page += 1
 
-# --- Convert and Upload ---
-def process_svg(svg_info):
-    svg_url = svg_info.get("url")
-    if not svg_url:
-        return None
+    return list(svg_links)[:NUM_FILES]
 
-    print("Downloading SVG:", svg_url)
-    svg_response = requests.get(svg_url, timeout=10)
-    svg_response.raise_for_status()
+# Download SVGs
+def download_svgs(svg_links):
+    os.makedirs(SVG_DIR, exist_ok=True)
+    for i, link in enumerate(svg_links):
+        filename = os.path.join(SVG_DIR, f'image_{i}.svg')
+        if os.path.exists(filename):
+            continue
+        try:
+            r = requests.get(link, timeout=10)
+            if r.status_code == 200:
+                with open(filename, 'wb') as f:
+                    f.write(r.content)
+                print(f"Downloaded: {filename}")
+        except Exception as e:
+            print(f"Failed to download {link}: {e}")
 
-    filename_base = f"svg_{int(time.time() * 1000)}"
-    svg_path = f"{filename_base}.svg"
-    png_path = f"{filename_base}.png"
+# Convert SVG to PNG
+def convert_svgs_to_png():
+    os.makedirs(PNG_DIR, exist_ok=True)
+    for svg_file in os.listdir(SVG_DIR):
+        svg_path = os.path.join(SVG_DIR, svg_file)
+        png_path = os.path.join(PNG_DIR, svg_file.replace('.svg', '.png'))
+        if os.path.exists(png_path):
+            continue
+        try:
+            cairosvg.svg2png(
+                url=svg_path,
+                write_to=png_path,
+                output_width=1200,
+                output_height=1600,
+                background_color=None
+            )
+            print(f"Converted: {png_path}")
+        except Exception as e:
+            print(f"Failed to convert {svg_file}: {e}")
 
-    # Save SVG locally
-    with open(svg_path, "wb") as f:
-        f.write(svg_response.content)
+# Upload PNG to Drive
+def upload_pngs_to_drive(service):
+    for file_name in os.listdir(PNG_DIR):
+        file_path = os.path.join(PNG_DIR, file_name)
+        file_metadata = {
+            'name': file_name,
+            'parents': [DRIVE_FOLDER_ID]
+        }
+        media = MediaFileUpload(file_path, mimetype='image/png')
+        try:
+            service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+            print(f"Uploaded: {file_name}")
+        except Exception as e:
+            print(f"Failed to upload {file_name}: {e}")
 
-    # Convert to PNG
-    try:
-        cairosvg.svg2png(url=svg_path, write_to=png_path, output_width=1200, output_height=1600)
-    except Exception as e:
-        print("Conversion failed:", e)
-        return None
-
-    # Upload to Google Drive
-    file_id = upload_to_drive(png_path, os.path.basename(png_path))
-    print("Uploaded file ID:", file_id)
-
-    # Clean up
-    os.remove(svg_path)
-    os.remove(png_path)
-
-    return file_id
-
-# --- Main ---
-def main():
-    svg_list = get_random_svgs(limit=10)  # You can change to 50 or 100 per batch
-    print(f"Found {len(svg_list)} SVGs")
-
-    for svg in svg_list:
-        process_svg(svg)
-
-if __name__ == "__main__":
-    main()
+# Main script
+if __name__ == '__main__':
+    drive_service = get_drive_service()
+    links = scrape_svg_links()
+    download_svgs(links)
+    convert_svgs_to_png()
+    upload_pngs_to_drive(drive_service)
