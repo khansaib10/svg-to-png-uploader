@@ -35,7 +35,7 @@ def upload_to_drive(filename, filepath):
     return uploaded_file.get('id')
 
 # === SCRAPE SVG LINKS FROM SVGREPO ===
-def scrape_svgrepo_svg_links(limit=5000):
+def scrape_svgrepo_svg_links(limit=5000, retries=3):
     base_url = 'https://www.svgrepo.com'
     svg_links = []
     page = 1
@@ -48,26 +48,30 @@ def scrape_svgrepo_svg_links(limit=5000):
     while len(svg_links) < limit:
         print(f"Scraping SVGRepo page {page}...")
         url = f"{base_url}/svg/{page}/"
-        
-        try:
-            response = requests.get(url, headers=headers)
-            if response.status_code != 200:
-                print(f"Failed to load page {page}. Status code: {response.status_code}")
-                break
 
-            soup = BeautifulSoup(response.text, 'html.parser')
-            icons = soup.select("a[href^='/download/']")
+        attempt = 0
+        while attempt < retries:
+            try:
+                response = requests.get(url, headers=headers)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    icons = soup.select("a[href^='/download/']")
+                    for a in icons:
+                        href = a.get("href")
+                        if href.endswith(".svg"):
+                            svg_links.append(base_url + href)
+                    page += 1
+                    break
+                else:
+                    print(f"Failed to load page {page}. Status code: {response.status_code}")
+                    time.sleep(5)
+            except requests.exceptions.RequestException as e:
+                print(f"Request failed for page {page}: {e}")
+                attempt += 1
+                time.sleep(5)
 
-            for a in icons:
-                href = a.get("href")
-                if href.endswith(".svg"):
-                    svg_links.append(base_url + href)
-
-            page += 1
-            time.sleep(1)
-
-        except requests.exceptions.RequestException as e:
-            print(f"Request failed for page {page}: {e}")
+        if attempt == retries:
+            print(f"Giving up on page {page} after {retries} attempts.")
             break
 
     return svg_links
