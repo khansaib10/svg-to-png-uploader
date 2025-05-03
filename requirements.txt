@@ -1,5 +1,7 @@
-selenium==4.10.0
-beautifulsoup4==4.12.2
-google-auth==2.21.0
-google-api-python-client==2.88.0
-requests==2.31.0
+Pillow
+selenium
+beautifulsoup4
+google-auth
+google-api-python-client
+google-auth-httplib2
+requests
