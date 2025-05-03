@@ -35,7 +35,7 @@ def upload_to_drive(file_path, folder_id, credentials_json):
 def scrape_pinterest_images(query, limit=1000):
     search_url = f"https://www.pinterest.com/search/pins/?q={query}"
     options = Options()
-    options.headless = True
+    options.add_argument('--headless')  # Set headless mode using the new method
     driver = webdriver.Chrome(options=options)
     driver.get(search_url)
     time.sleep(5)
