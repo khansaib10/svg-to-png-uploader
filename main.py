@@ -30,6 +30,7 @@ def upload_to_drive(service, folder_id, file_bytes, filename):
     file_metadata = {"name": filename, "parents": [folder_id]}
     media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype="image/jpeg")
     service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+    print(f"✅ Uploaded: {filename}")
 
 def get_drive_file_list(service, folder_id):
     results = service.files().list(q=f"'{folder_id}' in parents", fields="files(name)").execute()
@@ -138,8 +139,10 @@ def main():
     count = 1
     for url in urls:
         if url in downloaded_urls:
+            print(f"⏩ Skipping duplicate: {url}")
             continue
         if not is_high_quality_image(url):
+            print(f"⚠️ Skipping low-quality image: {url}")
             continue
 
         try:
@@ -153,6 +156,8 @@ def main():
                 print(f"✅ Uploaded: {filename}")
                 count += 1
                 new_downloaded.add(url)
+            else:
+                print(f"⏩ Image already exists on Google Drive: {filename}")
         except Exception as e:
             print(f"❌ Failed to upload {url}: {e}")
 
