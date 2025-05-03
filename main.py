@@ -53,8 +53,7 @@ def is_valid_image(image_data, min_size_kb=20):
         print(f"Image validation error: {e}")
         return False
 
-# Scrape Pinterest and visit pin pages for full-resolution and related images
-# Updated Scrape Pinterest function with better quality filtering
+# Scrape Pinterest: improved top-page image extraction and pin-page images
 def scrape_full_resolution_images(query, limit=100):
     print(f"Scraping Pinterest for query: {query}")
     search_url = f"https://www.pinterest.com/search/pins/?q={query.replace(' ', '%20')}"
@@ -67,26 +66,33 @@ def scrape_full_resolution_images(query, limit=100):
     time.sleep(5)
 
     pin_links = set()
-    image_urls = set()
+    image_urls = []
+    seen = set()
     last_height = driver.execute_script("return document.body.scrollHeight")
 
-    # Infinite scroll to gather pin URLs
+    # 1. Extract high-quality images from search results via srcset
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    for img in soup.find_all('img', srcset=True):
+        srcset = img['srcset']
+        # parse all resolutions
+        candidates = [part.strip().split(' ')[0] for part in srcset.split(',')]
+        # choose highest width value
+        try:
+            best = max(candidates, key=lambda u: int(u.split('/')[-1].split('x')[0]))
+        except:
+            best = candidates[-1]
+        if 'i.pinimg.com' in best and best not in seen:
+            seen.add(best)
+            image_urls.append(best)
+            print(f"🔝 Top search image: {best}")
+        if len(image_urls) >= limit:
+            break
+
+    # 2. Infinite scroll to collect pin URLs
     while len(pin_links) < limit * 2:
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(3)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-
-        # Get high-quality images from the search result page itself
-        for img_tag in soup.find_all('img', {'srcset': True}):
-            srcset = img_tag['srcset']
-            # Split srcset to get the highest resolution
-            resolutions = [res.split(' ')[0] for res in srcset.split(',')]
-            highest_res_url = max(resolutions, key=lambda x: int(x.split('x')[0]))
-            
-            if highest_res_url not in image_urls:
-                image_urls.add(highest_res_url)
-                print(f"✅ Found high-quality image from search results: {highest_res_url}")
-
         for a in soup.find_all('a', href=True):
             href = a['href']
             if '/pin/' in href:
@@ -97,47 +103,38 @@ def scrape_full_resolution_images(query, limit=100):
         last_height = new_height
 
     print(f"Found {len(pin_links)} pin links.")
-    # Visit each pin page to extract og:image and related images
+
+    # 3. Visit each pin page to extract og:image and any additional high-res images
     for link in list(pin_links)[:limit * 2]:
         if len(image_urls) >= limit:
             break
         try:
             driver.get(link)
             WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.TAG_NAME, 'head'))
+                EC.presence_of_element_located((By.TAG_NAME, 'img'))
             )
             soup = BeautifulSoup(driver.page_source, 'html.parser')
             meta = soup.find('meta', property='og:image')
-            if meta and meta.get('content'):
-                src = meta['content']
-                if src not in image_urls:
-                    image_urls.add(src)
-                    print(f"✅ Found main image: {src}")
-
-            # Collect related pins shown below
-            related_imgs = soup.find_all('img')
-            for img in related_imgs:
-                rel_src = img.get('src') or img.get('data-src')
-                if rel_src and '/736x/' in rel_src and rel_src not in image_urls:
-                    image_urls.add(rel_src)
-                    print(f"🔗 Found related image: {rel_src}")
-
+            if meta:
+                src = meta.get('content')
+                if src and src not in seen:
+                    seen.add(src)
+                    image_urls.append(src)
+                    print(f"✅ Main pin image: {src}")
         except Exception as e:
             print(f"❌ Error loading pin {link}: {e}")
 
     driver.quit()
-    print(f"Collected {len(image_urls)} images including related ones.")
-    return list(image_urls)[:limit]
-
+    print(f"Collected {len(image_urls)} high-quality images.")
+    return image_urls[:limit]
 
 # Download existing duplicates file from Google Drive
 def download_duplicates_file(service, folder_id):
     results = service.files().list(
-        q=f"'{folder_id}' in parents and name='downloaded_urls.txt' and trashed=false",
+        q=f"'{folder_id}' in parents and name='downloaded_urls.txt' and trashed=false'",
         fields='files(id,name)'
     ).execute()
     items = results.get('files', [])
-
     if items:
         file_id = items[0]['id']
         request = service.files().get_media(fileId=file_id)
@@ -174,7 +171,6 @@ def main():
     credentials = service_account.Credentials.from_service_account_info(credentials_dict)
     drive_service = build('drive', 'v3', credentials=credentials)
 
-    # Load duplicates
     dup_file_id = download_duplicates_file(drive_service, folder_id)
     downloaded_urls = load_downloaded_urls()
 
