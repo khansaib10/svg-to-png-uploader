@@ -68,7 +68,6 @@ def scrape_full_resolution_images(query, limit=100):
     pin_links = set()
     last_height = driver.execute_script("return document.body.scrollHeight")
 
-    # Infinite scroll to gather pin URLs
     while len(pin_links) < limit * 2:
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(3)
@@ -85,22 +84,31 @@ def scrape_full_resolution_images(query, limit=100):
     print(f"Found {len(pin_links)} pin links.")
     image_urls = []
 
-    # Visit each pin page to extract og:image
     for link in list(pin_links)[:limit * 2]:
         if len(image_urls) >= limit:
             break
         try:
             driver.get(link)
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.TAG_NAME, 'head'))
-            )
-            soup = BeautifulSoup(driver.page_source, 'html.parser')
-            meta = soup.find('meta', property='og:image')
-            if meta and meta.get('content'):
-                src = meta['content']
-                if src not in image_urls:
-                    image_urls.append(src)
-                    print(f"✅ Found image: {src}")
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, 'img')))
+            time.sleep(2)
+            images = driver.find_elements(By.TAG_NAME, 'img')
+            largest_img = None
+            max_area = 0
+            for img in images:
+                try:
+                    src = img.get_attribute('src')
+                    width = img.get_attribute('naturalWidth')
+                    height = img.get_attribute('naturalHeight')
+                    if src and width and height:
+                        area = int(width) * int(height)
+                        if area > max_area and 'i.pinimg.com' in src:
+                            largest_img = src
+                            max_area = area
+                except:
+                    continue
+            if largest_img and largest_img not in image_urls:
+                image_urls.append(largest_img)
+                print(f"✅ Found image: {largest_img}")
         except Exception as e:
             print(f"❌ Error loading pin {link}: {e}")
 
@@ -152,7 +160,6 @@ def main():
     credentials = service_account.Credentials.from_service_account_info(credentials_dict)
     drive_service = build('drive', 'v3', credentials=credentials)
 
-    # Load duplicates
     dup_file_id = download_duplicates_file(drive_service, folder_id)
     downloaded_urls = load_downloaded_urls()
 
