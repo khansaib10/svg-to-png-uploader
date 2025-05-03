@@ -10,7 +10,7 @@ from googleapiclient.http import MediaFileUpload
 import time
 
 # Configuration
-FOLDER_ID = 'YOUR_GOOGLE_DRIVE_FOLDER_ID'  # <-- Replace this with your Drive folder ID
+FOLDER_ID = '1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh'  # <-- Replace this with your Drive folder ID
 SERVICE_ACCOUNT_FILE = 'service_account.json'
 BASE_URL = 'https://www.svgrepo.com/vectors/popular/'
 
