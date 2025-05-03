@@ -53,7 +53,7 @@ def is_valid_image(image_data, min_size_kb=20):
         print(f"Image validation error: {e}")
         return False
 
-# Scrape Pinterest and visit pin pages to get full-resolution images
+# Scrape Pinterest and visit pin pages for full-resolution images
 def scrape_full_resolution_images(query, limit=100):
     print(f"Scraping Pinterest for query: {query}")
     search_url = f"https://www.pinterest.com/search/pins/?q={query.replace(' ', '%20')}"
@@ -68,14 +68,15 @@ def scrape_full_resolution_images(query, limit=100):
     pin_links = set()
     last_height = driver.execute_script("return document.body.scrollHeight")
 
-    while len(pin_links) < limit:
+    # Infinite scroll to gather pin URLs
+    while len(pin_links) < limit * 2:
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(3)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         for a in soup.find_all('a', href=True):
             href = a['href']
             if '/pin/' in href:
-                pin_links.add("https://www.pinterest.com" + href.split('?')[0])
+                pin_links.add('https://www.pinterest.com' + href.split('?')[0])
         new_height = driver.execute_script("return document.body.scrollHeight")
         if new_height == last_height:
             break
@@ -84,32 +85,35 @@ def scrape_full_resolution_images(query, limit=100):
     print(f"Found {len(pin_links)} pin links.")
     image_urls = []
 
-    for link in list(pin_links)[:limit]:
+    # Visit each pin page to extract og:image
+    for link in list(pin_links)[:limit * 2]:
+        if len(image_urls) >= limit:
+            break
         try:
             driver.get(link)
             WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.TAG_NAME, 'img'))
+                EC.presence_of_element_located((By.TAG_NAME, 'head'))
             )
-            time.sleep(2)
             soup = BeautifulSoup(driver.page_source, 'html.parser')
-            for img in soup.find_all('img'):
-                src = img.get('src')
-                if src and "originals" in src and 'gif' not in src.lower():
+            meta = soup.find('meta', property='og:image')
+            if meta and meta.get('content'):
+                src = meta['content']
+                if src not in image_urls:
                     image_urls.append(src)
-                    print(f"✅ Full-resolution image found: {src}")
-                    break
+                    print(f"✅ Found image: {src}")
         except Exception as e:
-            print(f"❌ Error loading pin page {link}: {e}")
-        if len(image_urls) >= limit:
-            break
+            print(f"❌ Error loading pin {link}: {e}")
 
     driver.quit()
-    return image_urls
+    print(f"Collected {len(image_urls)} full-resolution images.")
+    return image_urls[:limit]
 
 # Download existing duplicates file from Google Drive
 def download_duplicates_file(service, folder_id):
-    results = service.files().list(q=f"'{folder_id}' in parents and name = 'downloaded_urls.txt' and trashed = false",
-                                   fields="files(id, name)").execute()
+    results = service.files().list(
+        q=f"'{folder_id}' in parents and name='downloaded_urls.txt' and trashed=false",
+        fields='files(id,name)'
+    ).execute()
     items = results.get('files', [])
 
     if items:
@@ -132,7 +136,7 @@ def upload_duplicates_file(service, folder_id, file_id=None):
     media = MediaFileUpload('downloaded_urls.txt', mimetype='text/plain')
     if file_id:
         service.files().update(fileId=file_id, media_body=media).execute()
-        print("🔁 Updated existing duplicates file on Drive")
+        print("🔁 Updated duplicates file on Drive")
     else:
         service.files().create(body=file_metadata, media_body=media, fields='id').execute()
         print("📤 Uploaded new duplicates file to Drive")
@@ -140,7 +144,7 @@ def upload_duplicates_file(service, folder_id, file_id=None):
 # Main function
 def main():
     folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
-    queries = ["ai girl"]
+    queries = ["motorbike", "bike", "bike lovers", "harley davidson"]
     download_limit = 100
 
     credentials_json = os.getenv("SERVICE_ACCOUNT_BASE64")
@@ -148,7 +152,7 @@ def main():
     credentials = service_account.Credentials.from_service_account_info(credentials_dict)
     drive_service = build('drive', 'v3', credentials=credentials)
 
-    # Download existing duplicate list
+    # Load duplicates
     dup_file_id = download_duplicates_file(drive_service, folder_id)
     downloaded_urls = load_downloaded_urls()
 
@@ -156,29 +160,24 @@ def main():
 
     for query in queries:
         image_urls = scrape_full_resolution_images(query, download_limit)
-
         for idx, url in enumerate(image_urls):
             if url in downloaded_urls:
-                print(f"⏩ Skipping already downloaded image: {url}")
+                print(f"⏩ Skipping duplicate: {url}")
                 continue
-
-            print(f"⬇️ Downloading image {idx + 1}/{len(image_urls)}: {url}")
+            print(f"⬇️ Downloading {idx+1}/{len(image_urls)}: {url}")
             try:
                 img_data = requests.get(url, timeout=10).content
                 if not is_valid_image(img_data):
-                    print(f"⚠️ Skipping low-quality or landscape image: {url}")
+                    print(f"⚠️ Skipping invalid: {url}")
                     continue
-
-                img_path = f"temp_images/{query.replace(' ', '_')}_{idx + 1}.jpg"
-                with open(img_path, 'wb') as handler:
-                    handler.write(img_data)
-
+                img_path = f"temp_images/{query.replace(' ', '_')}_{idx+1}.jpg"
+                with open(img_path, 'wb') as f:
+                    f.write(img_data)
                 upload_to_drive(img_path, folder_id, drive_service)
                 downloaded_urls.add(url)
                 os.remove(img_path)
-
             except Exception as e:
-                print(f"❌ Error downloading {url}: {e}")
+                print(f"❌ Error: {e}")
 
     save_downloaded_urls(downloaded_urls)
     upload_duplicates_file(drive_service, folder_id, dup_file_id)
