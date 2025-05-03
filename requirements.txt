@@ -1,7 +1,5 @@
-requests
-beautifulsoup4
-cairosvg
-google-api-python-client
-google-auth
-google-auth-httplib2
-google-auth-oauthlib
+selenium==4.10.0
+beautifulsoup4==4.12.2
+google-auth==2.21.0
+google-api-python-client==2.88.0
+requests==2.31.0
