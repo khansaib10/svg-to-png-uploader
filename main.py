@@ -47,20 +47,22 @@ def scrape_svgrepo_popular_links(limit=5000):
             print(f"Failed to load page {page}. Status code: {response.status_code}")
             break
         soup = BeautifulSoup(response.text, "html.parser")
-        cards = soup.select("a.cursor-pointer")
+        cards = soup.select("a[href^='/svg/']")
         if not cards:
             print("No more SVGs found.")
             break
         for card in cards:
             href = card.get("href", "")
-            if href.startswith("/svg/"):
-                svg_url = f"https://www.svgrepo.com{href}download"
-                links.append(svg_url)
+            if "/svg/" in href:
+                download_url = f"https://www.svgrepo.com{href}/download"
+                if download_url not in links:
+                    links.append(download_url)
                 if len(links) >= limit:
                     break
         page += 1
     print(f"Total SVGs found: {len(links)}")
     return links
+
 
 # Convert SVG to PNG bytes
 def convert_svg_to_png(svg_url):
