@@ -1,92 +1,114 @@
 import os
-import io
-import time
 import requests
-import cairosvg
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup
+from cairosvg import svg2png
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.http import MediaFileUpload
+import time
 
-# -------------- CONFIGURATION --------------
-MAX_SVG = 10                 # how many SVGs to process
-PAGE_DELAY = 3               # seconds to wait per page load
-DRIVE_FOLDER_ID = None       # or set your Drive folder ID string
-# -------------------------------------------
+# Configuration
+FOLDER_ID = '1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh'  # <-- Replace this with your Drive folder ID
+SERVICE_ACCOUNT_FILE = 'service_account.json'
+BASE_URL = 'https://www.svgrepo.com/vectors/popular/'
 
 def authenticate_drive():
     print("Authenticating Google Drive...")
     creds = service_account.Credentials.from_service_account_file(
-        'service_account.json',
-        scopes=['https://www.googleapis.com/auth/drive.file']
+        SERVICE_ACCOUNT_FILE,
+        scopes=["https://www.googleapis.com/auth/drive"]
     )
-    return build('drive', 'v3', credentials=creds)
+    service = build("drive", "v3", credentials=creds)
+    return service
 
-def get_svg_links(max_count=MAX_SVG):
-    print("Scraping popular SVG pages...")
-    chrome_opts = Options()
-    chrome_opts.add_argument("--headless")
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_opts)
+def get_svg_page_links(pages=3):
+    print("Scraping popular SVGRepo pages...")
+    svg_links = []
+    for i in range(1, pages + 1):
+        print(f" → loading {BASE_URL}{i}/")
+        res = requests.get(f"{BASE_URL}{i}/", timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+        anchors = soup.select("a[href^='/svg/']")
+        for a in anchors:
+            href = a.get("href")
+            if href and href.count("/") >= 3:
+                parts = href.strip("/").split("/")
+                if len(parts) == 3:
+                    svg_links.append(href)
+        time.sleep(1)
+    print(f"Found {len(svg_links)} SVG entries.")
+    return svg_links
 
-    links = []
-    page = 1
-    while len(links) < max_count:
-        url = f"https://www.svgrepo.com/vectors/popular/{page}/"
-        print(f" → loading {url}")
-        driver.get(url)
-        time.sleep(PAGE_DELAY)
+def extract_id_and_name(svg_page_url):
+    parts = svg_page_url.strip("/").split("/")
+    if len(parts) == 3 and parts[0] == "svg":
+        return parts[1], parts[2]
+    return None, None
 
-        cards = driver.find_elements(By.CSS_SELECTOR, 'a[href^="/svg/"]')
-        if not cards:
-            break
-        for c in cards:
-            href = c.get_attribute("href")
-            # pattern: https://www.svgrepo.com/svg/12345/name
-            if href and '/svg/' in href:
-                dl = href.rstrip('/') + '/download'  # no trailing slash
-                if dl not in links:
-                    links.append(dl)
-                if len(links) >= max_count:
-                    break
-        page += 1
+def download_svg(id_, name):
+    url = f"https://www.svgrepo.com/download/{id_}/{name}.svg"
+    res = requests.get(url)
+    if res.status_code == 200:
+        return res.content
+    return None
 
-    driver.quit()
-    print(f"Found {len(links)} download links.")
-    return links
+def convert_svg_to_png(svg_bytes, png_path):
+    svg2png(bytestring=svg_bytes, write_to=png_path, output_width=1200, output_height=1600, background_color=None)
 
-def download_convert_upload(link, drive_service):
-    print(f"Processing: {link}")
-    # fetch raw SVG from download endpoint
-    r = requests.get(link, timeout=30)
-    if r.status_code != 200 or not r.content.strip().startswith(b'<svg'):
-        print(" ⚠️ Failed to fetch raw SVG, skipping.")
-        return
-    svg_data = r.content
-
-    # convert in-memory
-    png = cairosvg.svg2png(bytestring=svg_data, output_width=1200, output_height=1600)
-
-    # prepare upload
-    filename = os.path.basename(link).replace('/download','') + '.png'
-    metadata = {'name': filename}
-    if DRIVE_FOLDER_ID:
-        metadata['parents'] = [DRIVE_FOLDER_ID]
-    media = MediaIoBaseUpload(io.BytesIO(png), mimetype='image/png')
-
-    # upload
-    drive_service.files().create(body=metadata, media_body=media, fields='id').execute()
-    print(f" ✔️ Uploaded {filename}")
+def upload_to_drive(service, file_path, filename):
+    file_metadata = {
+        "name": filename,
+        "parents": [FOLDER_ID],
+        "mimeType": "image/png"
+    }
+    media = MediaFileUpload(file_path, mimetype="image/png")
+    uploaded = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+    return uploaded.get("id")
 
 def main():
-    drive = authenticate_drive()
-    links = get_svg_links()
-    for link in links:
-        download_convert_upload(link, drive)
+    print("Starting script...")
+    drive_service = authenticate_drive()
+    svg_pages = get_svg_page_links(pages=3)
+
+    os.makedirs("temp", exist_ok=True)
+    count = 0
+
+    for link in svg_pages:
+        id_, name = extract_id_and_name(link)
+        if not id_ or not name:
+            continue
+
+        print(f"Processing: {id_}/{name}")
+        svg_data = download_svg(id_, name)
+        if not svg_data:
+            print(" ⚠️ Could not fetch SVG.")
+            continue
+
+        svg_path = f"temp/{name}.svg"
+        png_path = f"temp/{name}.png"
+
+        try:
+            with open(svg_path, "wb") as f:
+                f.write(svg_data)
+
+            convert_svg_to_png(svg_data, png_path)
+            upload_to_drive(drive_service, png_path, f"{name}.png")
+
+            print(f" ✅ Uploaded: {name}.png")
+
+        except Exception as e:
+            print(f" ❌ Failed: {e}")
+
+        finally:
+            if os.path.exists(svg_path):
+                os.remove(svg_path)
+            if os.path.exists(png_path):
+                os.remove(png_path)
+
+        count += 1
+        if count >= 10:
+            break
+
     print("All done.")
 
 if __name__ == "__main__":
