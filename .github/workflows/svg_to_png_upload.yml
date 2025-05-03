@@ -6,7 +6,7 @@ on:
       - main
   workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *'  # Runs every 30 minutes
+    - cron: '*/30 * * * *'
 
 jobs:
   run:
@@ -15,6 +15,14 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v2
+
+    - name: Cache duplicate tracking file
+      uses: actions/cache@v3
+      with:
+        path: downloaded_urls.txt
+        key: downloaded-urls-cache
+        restore-keys: |
+          downloaded-urls-cache
 
     - name: Set up Python
       uses: actions/setup-python@v2
