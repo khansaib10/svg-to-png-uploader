@@ -90,7 +90,7 @@ def save_downloaded_url(url):
 
 def main():
     folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
-    queries = ["bike", "bike lovers", "Harley Davidson bike", "motorbike", "heavy bikes"]
+    queries = ["ai girl", "ai girl"]
     base64_credentials = os.getenv("SERVICE_ACCOUNT_BASE64")
     download_limit_per_query = 30
     downloaded_urls = load_downloaded_urls()
