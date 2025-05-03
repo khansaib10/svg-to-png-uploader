@@ -24,23 +24,28 @@ def get_svg_links(max_count=50):
     svg_urls = []
     page = 1
     while len(svg_urls) < max_count:
-        url = f"https://www.svgrepo.com/vectors/popular/?page={page}"
+        url = f"https://www.svgrepo.com/vectors/popular/{page}/"
         print(f"Fetching: {url}")
         r = requests.get(url)
         soup = BeautifulSoup(r.text, "html.parser")
-        links = soup.select("a.download")
-        if not links:
+
+        # Each SVG card contains an anchor with href="/svg/XXXXX/name/"
+        cards = soup.select('a[href^="/svg/"]')
+        for card in cards:
+            href = card.get("href")
+            if href and href.startswith("/svg/") and href.count("/") == 4:
+                download_url = f"https://www.svgrepo.com{href}download/"
+                svg_urls.append(download_url)
+                if len(svg_urls) >= max_count:
+                    break
+
+        if not cards:
             break
-        for link in links:
-            href = link.get("href")
-            if href and "/download/" in href:
-                full_url = f"https://www.svgrepo.com{href}"
-                svg_urls.append(full_url)
-            if len(svg_urls) >= max_count:
-                break
         page += 1
+
     print(f"Total SVGs found: {len(svg_urls)}")
     return svg_urls
+
 
 # Convert SVG content to PNG bytes
 def convert_svg_to_png(svg_content):
