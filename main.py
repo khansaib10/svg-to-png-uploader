@@ -54,6 +54,7 @@ def is_valid_image(image_data, min_size_kb=20):
         return False
 
 # Scrape Pinterest and visit pin pages for full-resolution and related images
+# Updated Scrape Pinterest function with better quality filtering
 def scrape_full_resolution_images(query, limit=100):
     print(f"Scraping Pinterest for query: {query}")
     search_url = f"https://www.pinterest.com/search/pins/?q={query.replace(' ', '%20')}"
@@ -78,10 +79,13 @@ def scrape_full_resolution_images(query, limit=100):
         # Get high-quality images from the search result page itself
         for img_tag in soup.find_all('img', {'srcset': True}):
             srcset = img_tag['srcset']
-            high_res_url = srcset.split(',')[-1].split(' ')[0]  # Get the largest resolution from srcset
-            if high_res_url not in image_urls:
-                image_urls.add(high_res_url)
-                print(f"✅ Found high-quality image from search results: {high_res_url}")
+            # Split srcset to get the highest resolution
+            resolutions = [res.split(' ')[0] for res in srcset.split(',')]
+            highest_res_url = max(resolutions, key=lambda x: int(x.split('x')[0]))
+            
+            if highest_res_url not in image_urls:
+                image_urls.add(highest_res_url)
+                print(f"✅ Found high-quality image from search results: {highest_res_url}")
 
         for a in soup.find_all('a', href=True):
             href = a['href']
@@ -124,6 +128,7 @@ def scrape_full_resolution_images(query, limit=100):
     driver.quit()
     print(f"Collected {len(image_urls)} images including related ones.")
     return list(image_urls)[:limit]
+
 
 # Download existing duplicates file from Google Drive
 def download_duplicates_file(service, folder_id):
