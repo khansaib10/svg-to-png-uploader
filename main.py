@@ -1,98 +1,77 @@
 import os
+import io
 import requests
+import cairosvg
 from bs4 import BeautifulSoup
-from cairosvg import svg2png
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
-from io import BytesIO
-from PIL import Image
 
-# Google Drive folder ID
-FOLDER_ID = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
+# ----------------- Google Drive Auth ------------------
+def authenticate_drive():
+    gauth = GoogleAuth()
+    gauth.LoadServiceConfigFile("service_account.json")
+    gauth.Authorize()
+    return GoogleDrive(gauth)
 
-# Authenticate Google Drive
-print("Authenticating Google Drive...")
-ga = GoogleAuth()
-ga.LocalWebserverAuth()
-drive = GoogleDrive(ga)
+# ----------------- Get SVG URLs -----------------------
+def get_svg_links(max_count=50):
+    print("Scraping popular SVGs...")
+    svg_urls = []
+    page = 1
+    while len(svg_urls) < max_count:
+        url = f"https://www.svgrepo.com/vectors/popular/?page={page}"
+        print(f"Fetching: {url}")
+        r = requests.get(url)
+        soup = BeautifulSoup(r.text, "html.parser")
+        links = soup.select("a.download")
+        if not links:
+            break
+        for link in links:
+            href = link.get("href")
+            if href and "/download/" in href:
+                full_url = f"https://www.svgrepo.com{href}"
+                svg_urls.append(full_url)
+            if len(svg_urls) >= max_count:
+                break
+        page += 1
+    print(f"Total SVGs found: {len(svg_urls)}")
+    return svg_urls
 
+# ----------------- Convert SVG to PNG -----------------
+def convert_svg_to_png(svg_content):
+    png_data = cairosvg.svg2png(bytestring=svg_content, output_width=1200, output_height=1600)
+    return png_data
 
-def upload_to_drive(image_data, filename):
-    print(f"Uploading {filename} to Google Drive...")
-    file = drive.CreateFile({'title': filename, 'parents': [{'id': FOLDER_ID}]})
-    image_data.seek(0)
-    file.SetContentFile(filename)
-    with open(filename, "wb") as f:
-        f.write(image_data.read())
-    file.Upload()
-    os.remove(filename)
+# ----------------- Upload to Google Drive -------------
+def upload_to_drive(drive, png_bytes, filename, folder_id=None):
+    file_drive = drive.CreateFile({
+        'title': filename,
+        'parents': [{'id': folder_id}] if folder_id else []
+    })
+    file_drive.SetContentString(png_bytes.decode('latin1'))
+    file_drive.Upload()
 
+# ----------------- Main Process -----------------------
+def main():
+    print("Authenticating Google Drive...")
+    drive = authenticate_drive()
 
-def fetch_svg_file(svg_page_url):
-    try:
-        print(f"Visiting SVG page: {svg_page_url}")
-        page = requests.get(svg_page_url)
-        if page.status_code != 200:
-            print(f"Failed to load SVG page: {svg_page_url}")
-            return None
-        soup = BeautifulSoup(page.text, "html.parser")
-        download_btn = soup.find("a", string="SVG")
-        if download_btn and download_btn["href"].endswith(".svg"):
-            svg_url = download_btn["href"]
-            if svg_url.startswith("/"):
-                svg_url = "https://www.svgrepo.com" + svg_url
-            print(f"Found SVG file: {svg_url}")
-            svg_response = requests.get(svg_url)
-            if svg_response.status_code == 200:
-                return svg_response.content
-            else:
-                print(f"Failed to download raw SVG from {svg_url}")
-        else:
-            print("SVG download link not found on the page.")
-    except Exception as e:
-        print(f"Exception while fetching SVG file: {e}")
-    return None
+    svg_urls = get_svg_links(max_count=50)
+    for idx, url in enumerate(svg_urls, 1):
+        print(f"[{idx}] Downloading and converting: {url}")
+        try:
+            svg_response = requests.get(url.replace("/download", ""))
+            if svg_response.status_code != 200:
+                raise Exception(f"Failed to fetch SVG from: {url}")
+            svg_content = svg_response.content
+            if not svg_content.strip().startswith(b"<?xml") and b"<svg" not in svg_content:
+                raise Exception("Downloaded file is not a valid SVG.")
+            png_data = convert_svg_to_png(svg_content)
+            filename = f"svg_image_{idx}.png"
+            upload_to_drive(drive, png_data, filename)
+        except Exception as e:
+            print(f"Error converting {url}: {e}")
 
-
-def convert_and_upload(svg_content, index):
-    try:
-        png_output = BytesIO()
-        svg2png(bytestring=svg_content, write_to=png_output, output_width=1200, output_height=1600, background_color=None)
-        png_output.seek(0)
-        filename = f"design_{index}.png"
-        upload_to_drive(png_output, filename)
-    except Exception as e:
-        print(f"Error converting SVG to PNG: {e}")
-
-
-print("Starting script...")
-print("Starting batch: 0 to 50")
-
-# Scrape popular SVGs
-print("Scraping popular SVGs...")
-svg_links = []
-for page in range(1, 5):
-    print(f"Fetching: https://www.svgrepo.com/vectors/popular/?page={page}")
-    r = requests.get(f"https://www.svgrepo.com/vectors/popular/?page={page}")
-    soup = BeautifulSoup(r.text, "html.parser")
-    grid = soup.find_all("a", class_="svg-preview")
-    if not grid:
-        print("No more SVGs found.")
-        break
-    for link in grid:
-        href = link.get("href")
-        if href and href.startswith("/svg"):
-            svg_links.append("https://www.svgrepo.com" + href)
-    if len(svg_links) >= 50:
-        break
-
-print(f"Total SVGs found: {len(svg_links)}")
-
-# Process and upload
-for i, svg_page_url in enumerate(svg_links[:50]):
-    print(f"[{i+1}] Downloading and converting: {svg_page_url}")
-    svg_content = fetch_svg_file(svg_page_url)
-    if svg_content:
-        convert_and_upload(svg_content, i+1)
-    else:
-        print(f"Skipping {svg_page_url} due to fetch error.")
+if __name__ == "__main__":
+    print("Starting script...")
+    main()
