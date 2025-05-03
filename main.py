@@ -15,9 +15,9 @@ BASE_URL = 'https://www.svgrepo.com/vectors/popular/'
 
 # Step 1: Decode base64 credentials
 def save_credentials():
-    base64_creds = os.getenv("GOOGLE_CREDS_BASE64")
+    base64_creds = os.getenv("SERVICE_ACCOUNT_BASE64")
     if not base64_creds:
-        raise Exception("❌ Missing GOOGLE_CREDS_BASE64 environment variable.")
+        raise Exception("❌ Missing SERVICE_ACCOUNT_BASE64 environment variable.")
     with open(SERVICE_ACCOUNT_FILE, "wb") as f:
         f.write(base64.b64decode(base64_creds))
 
