@@ -79,39 +79,43 @@ def is_valid_image(image_data, min_size_kb=20):
 # Main Function
 def main():
     folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"  # Replace with your Google Drive folder ID
-    query = "motorbike"  # Modify with your desired search query
+    queries = ["bike", "bike lovers", "Harley Davidson bike", "motorbike", "heavy bikes"]  # Added multiple keywords
     download_limit = 100  # Modify with the number of images you want to download
     base64_credentials = os.getenv("SERVICE_ACCOUNT_BASE64")  # Get base64 credentials from environment variable
 
     # Create a temporary folder for downloaded images
     os.makedirs("temp_images", exist_ok=True)
 
-    # Scrape Pinterest images
-    image_urls = scrape_pinterest_images(query, download_limit)
+    # Iterate over each keyword and scrape Pinterest images
+    for query in queries:
+        print(f"Scraping Pinterest for images with query: {query}")
 
-    if not image_urls:
-        print("No images found. Exiting.")
-        return
+        # Scrape Pinterest images for each keyword
+        image_urls = scrape_pinterest_images(query, download_limit)
 
-    # Download and upload images to Google Drive
-    for idx, url in enumerate(image_urls):
-        print(f"Downloading image {idx + 1}/{len(image_urls)}: {url}")
-        try:
-            img_data = requests.get(url).content
+        if not image_urls:
+            print(f"No images found for query '{query}'.")
+            continue
 
-            # Check if the image is valid (good size)
-            if not is_valid_image(img_data):
-                print(f"Skipping low-quality image: {url}")
-                continue
+        # Download and upload images to Google Drive
+        for idx, url in enumerate(image_urls):
+            print(f"Downloading image {idx + 1}/{len(image_urls)}: {url}")
+            try:
+                img_data = requests.get(url).content
 
-            img_path = f"temp_images/{idx + 1}.jpg"
-            with open(img_path, 'wb') as handler:
-                handler.write(img_data)
-            print(f"Downloaded {img_path}. Uploading to Google Drive...")
-            upload_to_drive(img_path, folder_id, base64_credentials)
-            os.remove(img_path)  # Clean up after upload
-        except Exception as e:
-            print(f"Error downloading {url}: {e}")
+                # Check if the image is valid (good size)
+                if not is_valid_image(img_data):
+                    print(f"Skipping low-quality image: {url}")
+                    continue
+
+                img_path = f"temp_images/{query}_{idx + 1}.jpg"  # Save images with the query name in the filename
+                with open(img_path, 'wb') as handler:
+                    handler.write(img_data)
+                print(f"Downloaded {img_path}. Uploading to Google Drive...")
+                upload_to_drive(img_path, folder_id, base64_credentials)
+                os.remove(img_path)  # Clean up after upload
+            except Exception as e:
+                print(f"Error downloading {url}: {e}")
 
 if __name__ == '__main__':
     main()
