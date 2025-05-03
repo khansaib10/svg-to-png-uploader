@@ -1,133 +1,90 @@
 import os
+import time
+import base64
+import json
 import requests
 from bs4 import BeautifulSoup
-from cairosvg import svg2png
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-import time
-import base64
 
-# Configuration
-FOLDER_ID = '1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh'  # <-- Your Google Drive Folder ID
-SERVICE_ACCOUNT_FILE = 'credentials.json'
-BASE_URL = 'https://www.svgrepo.com/vectors/popular/'
+# Decode the base64-encoded credentials
+def decode_credentials(base64_credentials):
+    decoded_bytes = base64.b64decode(base64_credentials)
+    return json.loads(decoded_bytes)
 
-# Step 1: Decode base64 credentials
-def save_credentials():
-    base64_creds = os.getenv("SERVICE_ACCOUNT_BASE64")
-    if not base64_creds:
-        raise Exception("❌ Missing SERVICE_ACCOUNT_BASE64 environment variable.")
-    with open(SERVICE_ACCOUNT_FILE, "wb") as f:
-        f.write(base64.b64decode(base64_creds))
+# Setup Google Drive
+def upload_to_drive(file_path, folder_id, credentials_json):
+    SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
-# Step 2: Authenticate Google Drive
-def authenticate_drive():
-    print("Authenticating Google Drive...")
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE,
-        scopes=["https://www.googleapis.com/auth/drive"]
-    )
-    service = build("drive", "v3", credentials=creds)
-    return service
+    # Decode and load the credentials
+    credentials_dict = decode_credentials(credentials_json)
+    credentials = service_account.Credentials.from_service_account_info(
+        credentials_dict, scopes=SCOPES)
+    drive_service = build('drive', 'v3', credentials=credentials)
 
-# Step 3: Scrape SVGRepo popular pages
-def get_svg_page_links(pages=3):
-    print("Scraping popular SVGRepo pages...")
-    svg_links = []
-    for i in range(1, pages + 1):
-        print(f" → loading {BASE_URL}{i}/")
-        res = requests.get(f"{BASE_URL}{i}/", timeout=10)
-        soup = BeautifulSoup(res.text, "html.parser")
-        anchors = soup.select("a[href^='/svg/']")
-        for a in anchors:
-            href = a.get("href")
-            if href and href.count("/") >= 3:
-                parts = href.strip("/").split("/")
-                if len(parts) == 3:
-                    svg_links.append(href)
-        time.sleep(1)
-    print(f"Found {len(svg_links)} SVG entries.")
-    return svg_links
+    file_metadata = {'name': os.path.basename(file_path), 'parents': [folder_id]}
+    media = MediaFileUpload(file_path, mimetype='image/jpeg')
 
-# Step 4: Extract ID and name from URL
-def extract_id_and_name(svg_page_url):
-    parts = svg_page_url.strip("/").split("/")
-    if len(parts) == 3 and parts[0] == "svg":
-        return parts[1], parts[2]
-    return None, None
+    file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print(f"Uploaded {file_path} to Google Drive. File ID: {file['id']}")
 
-# Step 5: Download SVG file
-def download_svg(id_, name):
-    url = f"https://www.svgrepo.com/download/{id_}/{name}.svg"
-    res = requests.get(url)
-    if res.status_code == 200:
-        return res.content
-    return None
+# Scrape Pinterest
+def scrape_pinterest_images(query, limit=1000):
+    search_url = f"https://www.pinterest.com/search/pins/?q={query}"
+    options = Options()
+    options.headless = True
+    driver = webdriver.Chrome(options=options)
+    driver.get(search_url)
+    time.sleep(5)
 
-# Step 6: Convert SVG to PNG
-def convert_svg_to_png(svg_bytes, png_path):
-    svg2png(bytestring=svg_bytes, write_to=png_path, output_width=1200, output_height=1600, background_color=None)
+    image_urls = set()
+    last_height = driver.execute_script("return document.body.scrollHeight")
 
-# Step 7: Upload PNG to Google Drive
-def upload_to_drive(service, file_path, filename):
-    file_metadata = {
-        "name": filename,
-        "parents": [FOLDER_ID],
-        "mimeType": "image/png"
-    }
-    media = MediaFileUpload(file_path, mimetype="image/png")
-    uploaded = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
-    return uploaded.get("id")
+    while len(image_urls) < limit:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(3)
 
-# Main runner
-def main():
-    print("Starting script...")
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        for img in soup.find_all('img'):
+            src = img.get('src')
+            if src and '236x' not in src:  # avoid low-res thumbnails
+                image_urls.add(src)
 
-    save_credentials()  # Save credentials from base64 env var
-    drive_service = authenticate_drive()
-    svg_pages = get_svg_page_links(pages=3)
-
-    os.makedirs("temp", exist_ok=True)
-    count = 0
-
-    for link in svg_pages:
-        id_, name = extract_id_and_name(link)
-        if not id_ or not name:
-            continue
-
-        print(f"Processing: {id_}/{name}")
-        svg_data = download_svg(id_, name)
-        if not svg_data:
-            print(" ⚠️ Could not fetch SVG.")
-            continue
-
-        svg_path = f"temp/{name}.svg"
-        png_path = f"temp/{name}.png"
-
-        try:
-            with open(svg_path, "wb") as f:
-                f.write(svg_data)
-
-            convert_svg_to_png(svg_data, png_path)
-            upload_to_drive(drive_service, png_path, f"{name}.png")
-
-            print(f" ✅ Uploaded: {name}.png")
-
-        except Exception as e:
-            print(f" ❌ Failed: {e}")
-
-        finally:
-            if os.path.exists(svg_path):
-                os.remove(svg_path)
-            if os.path.exists(png_path):
-                os.remove(png_path)
-
-        count += 1
-        if count >= 10:
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
             break
+        last_height = new_height
 
-    print("All done.")
+    driver.quit()
+    return list(image_urls)[:limit]
 
-if __name__ == "__main__":
+# Main Function
+def main():
+    folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"  # Replace with your Drive folder ID
+    query = "motorbike"  # Modify with your desired search query
+    download_limit = 100  # Modify with the number of images you want to download
+    base64_credentials = os.getenv("SERVICE_ACCOUNT_BASE64")  # Get base64 credentials from environment variable
+
+    # Create a temporary folder for downloaded images
+    os.makedirs("temp_images", exist_ok=True)
+
+    # Scrape Pinterest images
+    image_urls = scrape_pinterest_images(query, download_limit)
+
+    # Download and upload images to Google Drive
+    for idx, url in enumerate(image_urls):
+        try:
+            img_data = requests.get(url).content
+            img_path = f"temp_images/{idx + 1}.jpg"
+            with open(img_path, 'wb') as handler:
+                handler.write(img_data)
+            upload_to_drive(img_path, folder_id, base64_credentials)
+            os.remove(img_path)  # Clean up after upload
+        except Exception as e:
+            print(f"Error downloading {url}: {e}")
+
+if __name__ == '__main__':
     main()
