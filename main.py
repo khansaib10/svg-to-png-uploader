@@ -144,7 +144,7 @@ def upload_duplicates_file(service, folder_id, file_id=None):
 # Main function
 def main():
     folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
-    queries = ["motorbike", "bike", "bike lovers", "harley davidson"]
+    queries = ["ai girl"]
     download_limit = 100
 
     credentials_json = os.getenv("SERVICE_ACCOUNT_BASE64")
