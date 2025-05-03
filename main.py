@@ -90,23 +90,37 @@ def scrape_pinterest_links(query, limit=50):
 
 # Extract full-res image from pin page
 def get_image_from_pin(pin_url):
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
     options = Options()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     driver = webdriver.Chrome(options=options)
     driver.get(pin_url)
-    time.sleep(3)
 
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
-    images = soup.find_all('img')
+    try:
+        # Wait for images to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.TAG_NAME, "img"))
+        )
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        img_tags = soup.find_all("img")
+
+        # Prioritize high-res sources
+        for img in img_tags:
+            src = img.get("src", "")
+            if "i.pinimg.com/originals" in src or "i.pinimg.com/736x" in src:
+                driver.quit()
+                return src
+
+    except Exception as e:
+        print(f"⚠️ Error extracting image from {pin_url}: {e}")
+
     driver.quit()
-
-    for img in images:
-        src = img.get('src')
-        if src and "originals" in src:
-            return src
     return None
+
 
 # Validate image by size and aspect ratio
 def is_valid_image(image_data):
