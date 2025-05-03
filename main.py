@@ -31,11 +31,11 @@ def upload_to_drive(file_path, folder_id, credentials_json):
     file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
     print(f"Uploaded {file_path} to Google Drive. File ID: {file['id']}")
 
-# Scrape Pinterest for high-quality images
+# Scrape Pinterest
 def scrape_pinterest_images(query, limit=1000):
     search_url = f"https://www.pinterest.com/search/pins/?q={query}"
     options = Options()
-    options.add_argument('--headless')  # Set headless mode using the new method
+    options.add_argument('--headless')  # Use the correct headless argument
     driver = webdriver.Chrome(options=options)
     driver.get(search_url)
     time.sleep(5)
@@ -50,8 +50,8 @@ def scrape_pinterest_images(query, limit=1000):
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         for img in soup.find_all('img'):
             src = img.get('src')
-            # Skip images with '236x' or '100x' in the URL (these are typically thumbnails)
-            if src and '236x' not in src and '100x' not in src and len(src) > 1000:  # Ensure a reasonable file size
+            # Ensure the image URL doesn't contain low-resolution markers like '236x'
+            if src and '236x' not in src and '100x' not in src:
                 image_urls.add(src)
 
         new_height = driver.execute_script("return document.body.scrollHeight")
@@ -64,7 +64,7 @@ def scrape_pinterest_images(query, limit=1000):
 
 # Main Function
 def main():
-    folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"  # Google Drive Folder ID
+    folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"  # Replace with your Google Drive folder ID
     query = "motorbike"  # Modify with your desired search query
     download_limit = 100  # Modify with the number of images you want to download
     base64_credentials = os.getenv("SERVICE_ACCOUNT_BASE64")  # Get base64 credentials from environment variable
