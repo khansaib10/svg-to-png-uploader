@@ -3,17 +3,22 @@ import io
 import requests
 import cairosvg
 from bs4 import BeautifulSoup
-from pydrive.auth import GoogleAuth
-from pydrive.drive import GoogleDrive
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 
-# ----------------- Google Drive Auth ------------------
+# Google Drive Folder ID (optional, can be None)
+DRIVE_FOLDER_ID = None  # Replace with your folder ID if needed
+
+# Authenticate Google Drive using service account
 def authenticate_drive():
-    gauth = GoogleAuth()
-    gauth.LoadServiceConfigFile("service_account.json")
-    gauth.Authorize()
-    return GoogleDrive(gauth)
+    creds = service_account.Credentials.from_service_account_file(
+        'service_account.json',
+        scopes=['https://www.googleapis.com/auth/drive']
+    )
+    return build('drive', 'v3', credentials=creds)
 
-# ----------------- Get SVG URLs -----------------------
+# Scrape SVG download links
 def get_svg_links(max_count=50):
     print("Scraping popular SVGs...")
     svg_urls = []
@@ -37,41 +42,38 @@ def get_svg_links(max_count=50):
     print(f"Total SVGs found: {len(svg_urls)}")
     return svg_urls
 
-# ----------------- Convert SVG to PNG -----------------
+# Convert SVG content to PNG bytes
 def convert_svg_to_png(svg_content):
-    png_data = cairosvg.svg2png(bytestring=svg_content, output_width=1200, output_height=1600)
-    return png_data
+    return cairosvg.svg2png(bytestring=svg_content, output_width=1200, output_height=1600)
 
-# ----------------- Upload to Google Drive -------------
-def upload_to_drive(drive, png_bytes, filename, folder_id=None):
-    file_drive = drive.CreateFile({
-        'title': filename,
-        'parents': [{'id': folder_id}] if folder_id else []
-    })
-    file_drive.SetContentString(png_bytes.decode('latin1'))
-    file_drive.Upload()
+# Upload PNG to Google Drive
+def upload_to_drive(service, png_data, filename):
+    file_metadata = {'name': filename}
+    if DRIVE_FOLDER_ID:
+        file_metadata['parents'] = [DRIVE_FOLDER_ID]
 
-# ----------------- Main Process -----------------------
+    media = MediaIoBaseUpload(io.BytesIO(png_data), mimetype='image/png')
+    service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+
+# Main process
 def main():
+    print("Starting script...")
     print("Authenticating Google Drive...")
-    drive = authenticate_drive()
+    drive_service = authenticate_drive()
 
     svg_urls = get_svg_links(max_count=50)
     for idx, url in enumerate(svg_urls, 1):
         print(f"[{idx}] Downloading and converting: {url}")
         try:
-            svg_response = requests.get(url.replace("/download", ""))
-            if svg_response.status_code != 200:
-                raise Exception(f"Failed to fetch SVG from: {url}")
-            svg_content = svg_response.content
-            if not svg_content.strip().startswith(b"<?xml") and b"<svg" not in svg_content:
-                raise Exception("Downloaded file is not a valid SVG.")
-            png_data = convert_svg_to_png(svg_content)
+            svg_url = url.replace("/download", "")
+            r = requests.get(svg_url)
+            if r.status_code != 200 or b"<svg" not in r.content:
+                raise Exception("Invalid SVG data")
+            png_data = convert_svg_to_png(r.content)
             filename = f"svg_image_{idx}.png"
-            upload_to_drive(drive, png_data, filename)
+            upload_to_drive(drive_service, png_data, filename)
         except Exception as e:
             print(f"Error converting {url}: {e}")
 
 if __name__ == "__main__":
-    print("Starting script...")
     main()
