@@ -23,7 +23,6 @@ def upload_to_drive(file_path, folder_id, credentials_json):
     print(f"Uploading {file_path} to Google Drive...")
     SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
-    # Decode and load the credentials
     credentials_dict = decode_credentials(credentials_json)
     credentials = service_account.Credentials.from_service_account_info(
         credentials_dict, scopes=SCOPES)
@@ -40,7 +39,7 @@ def scrape_pinterest_images(query, limit=1000):
     print(f"Scraping Pinterest for images with query: {query}")
     search_url = f"https://www.pinterest.com/search/pins/?q={query}"
     options = Options()
-    options.add_argument('--headless')  # Use the correct headless argument
+    options.add_argument('--headless')
     driver = webdriver.Chrome(options=options)
     driver.get(search_url)
     time.sleep(5)
@@ -55,7 +54,6 @@ def scrape_pinterest_images(query, limit=1000):
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         for img in soup.find_all('img'):
             src = img.get('src')
-            # Ensure the image URL doesn't contain low-resolution markers like '236x'
             if src and ('236x' not in src and '100x' not in src and '300x' not in src):
                 image_urls.add(src)
 
@@ -68,52 +66,58 @@ def scrape_pinterest_images(query, limit=1000):
     print(f"Scraping complete. Found {len(image_urls)} image URLs.")
     return list(image_urls)[:limit]
 
-# Check Image Size Before Uploading
+# Validate image: size + resolution + 9:16 aspect ratio
 def is_valid_image(image_data, min_size_kb=20):
     image = Image.open(BytesIO(image_data))
     width, height = image.size
     size_kb = len(image_data) / 1024
-    print(f"Checking image size: {size_kb:.2f} KB, Resolution: {width}x{height}")
-    return size_kb >= min_size_kb and width > 500 and height > 500  # Adjust size check as needed
+    aspect_ratio = height / width if width else 0
+    print(f"Checking image size: {size_kb:.2f} KB, Resolution: {width}x{height}, Ratio: {aspect_ratio:.2f}")
+    return (
+        size_kb >= min_size_kb and
+        width > 500 and height > 500 and
+        1.7 <= aspect_ratio <= 1.85
+    )
 
-# Main Function
+# Main function
 def main():
-    folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"  # Replace with your Google Drive folder ID
-    queries = ["ai girl", "ai girls", "ai girl", "ai girl"]  # Added multiple keywords
-    download_limit = 100  # Modify with the number of images you want to download
-    base64_credentials = os.getenv("SERVICE_ACCOUNT_BASE64")  # Get base64 credentials from environment variable
+    folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
+    queries = ["bike", "bike lovers", "Harley Davidson bike", "motorbike", "heavy bikes"]
+    download_limit = 100
+    base64_credentials = os.getenv("SERVICE_ACCOUNT_BASE64")
 
-    # Create a temporary folder for downloaded images
     os.makedirs("temp_images", exist_ok=True)
 
-    # Iterate over each keyword and scrape Pinterest images
-    for query in queries:
-        print(f"Scraping Pinterest for images with query: {query}")
+    downloaded_urls = set()  # Store already downloaded URLs
 
-        # Scrape Pinterest images for each keyword
+    for query in queries:
+        print(f"\nStarting keyword: {query}")
         image_urls = scrape_pinterest_images(query, download_limit)
 
         if not image_urls:
             print(f"No images found for query '{query}'.")
             continue
 
-        # Download and upload images to Google Drive
         for idx, url in enumerate(image_urls):
+            if url in downloaded_urls:
+                print(f"Skipping duplicate URL: {url}")
+                continue
+
             print(f"Downloading image {idx + 1}/{len(image_urls)}: {url}")
             try:
                 img_data = requests.get(url).content
-
-                # Check if the image is valid (good size)
                 if not is_valid_image(img_data):
-                    print(f"Skipping low-quality image: {url}")
+                    print("Skipping image: doesn't meet quality or ratio requirements.")
                     continue
 
-                img_path = f"temp_images/{query}_{idx + 1}.jpg"  # Save images with the query name in the filename
+                img_path = f"temp_images/{query}_{idx + 1}.jpg"
                 with open(img_path, 'wb') as handler:
                     handler.write(img_data)
-                print(f"Downloaded {img_path}. Uploading to Google Drive...")
+
                 upload_to_drive(img_path, folder_id, base64_credentials)
-                os.remove(img_path)  # Clean up after upload
+                os.remove(img_path)
+
+                downloaded_urls.add(url)  # Mark as downloaded
             except Exception as e:
                 print(f"Error downloading {url}: {e}")
 
