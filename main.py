@@ -79,7 +79,7 @@ def is_valid_image(image_data, min_size_kb=20):
 # Main Function
 def main():
     folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"  # Replace with your Google Drive folder ID
-    queries = ["bike", "bike lovers", "Harley Davidson bike", "motorbike", "heavy bikes"]  # Added multiple keywords
+    queries = ["ai girl", "ai girls", "ai girl", "ai girl"]  # Added multiple keywords
     download_limit = 100  # Modify with the number of images you want to download
     base64_credentials = os.getenv("SERVICE_ACCOUNT_BASE64")  # Get base64 credentials from environment variable
 
