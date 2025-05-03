@@ -1,8 +1,10 @@
 import os
-import time
+import io
 import base64
 import json
 import requests
+import time
+from PIL import Image
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -11,49 +13,42 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-from PIL import Image
-from io import BytesIO
+from googleapiclient.http import MediaIoBaseUpload
 
-# Decode base64 service account credentials
-def decode_credentials(base64_credentials):
-    print("Decoding credentials...")
-    decoded_bytes = base64.b64decode(base64_credentials)
-    return json.loads(decoded_bytes)
+# ========== GOOGLE DRIVE SETUP ==========
 
-# Load downloaded URLs from file
-def load_downloaded_urls():
-    if os.path.exists("downloaded_urls.txt"):
-        with open("downloaded_urls.txt", "r") as f:
-            return set(f.read().splitlines())
-    return set()
+def load_credentials():
+    service_account_base64 = os.getenv("SERVICE_ACCOUNT_BASE64")
+    key_json = base64.b64decode(service_account_base64).decode("utf-8")
+    credentials = service_account.Credentials.from_service_account_info(
+        json.loads(key_json),
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return credentials
 
-# Save downloaded URLs to file
-def save_downloaded_urls(urls):
-    with open("downloaded_urls.txt", "w") as f:
-        f.write("\n".join(urls))
+def upload_to_drive(service, folder_id, file_bytes, filename):
+    file_metadata = {"name": filename, "parents": [folder_id]}
+    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype="image/jpeg")
+    service.files().create(body=file_metadata, media_body=media, fields="id").execute()
 
-# Upload image to Google Drive
-def upload_to_drive(file_path, folder_id, drive_service):
-    print(f"Uploading {file_path} to Google Drive...")
-    file_metadata = {'name': os.path.basename(file_path), 'parents': [folder_id]}
-    media = MediaFileUpload(file_path, mimetype='image/jpeg')
-    file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    print(f"Uploaded {file_path} to Google Drive. File ID: {file['id']}")
+def get_drive_file_list(service, folder_id):
+    results = service.files().list(q=f"'{folder_id}' in parents", fields="files(name)").execute()
+    return {file["name"] for file in results.get("files", [])}
 
-# Check if image is portrait and high-quality
-def is_valid_image(image_data, min_size_kb=20):
+# ========== IMAGE FILTERING ==========
+
+def is_high_quality_image(url):
     try:
-        image = Image.open(BytesIO(image_data))
+        response = requests.get(url, timeout=10)
+        image = Image.open(io.BytesIO(response.content))
         width, height = image.size
-        size_kb = len(image_data) / 1024
-        print(f"Checking image: {size_kb:.2f} KB, {width}x{height}")
-        return size_kb >= min_size_kb and width > 500 and height > 500 and height > width
-    except Exception as e:
-        print(f"Image validation error: {e}")
+        ratio = height / width
+        return ratio > 1.2 and height >= 1000 and width >= 500
+    except:
         return False
 
-# Scrape Pinterest and visit pin pages for full-resolution and related images
+# ========== PINTEREST SCRAPER ==========
+
 def scrape_full_resolution_images(query, limit=100):
     print(f"Scraping Pinterest for query: {query}")
     search_url = f"https://www.pinterest.com/search/pins/?q={query.replace(' ', '%20')}"
@@ -68,7 +63,6 @@ def scrape_full_resolution_images(query, limit=100):
     pin_links = set()
     last_height = driver.execute_script("return document.body.scrollHeight")
 
-    # Infinite scroll to gather pin URLs
     while len(pin_links) < limit * 2:
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(3)
@@ -85,111 +79,85 @@ def scrape_full_resolution_images(query, limit=100):
     print(f"Found {len(pin_links)} pin links.")
     image_urls = []
 
-    # Visit each pin page to extract og:image and related images
-    for link in list(pin_links)[:limit * 2]:
+    for link in list(pin_links)[:limit]:
         if len(image_urls) >= limit:
             break
         try:
             driver.get(link)
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.TAG_NAME, 'head'))
-            )
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, 'img')))
             soup = BeautifulSoup(driver.page_source, 'html.parser')
-            meta = soup.find('meta', property='og:image')
-            if meta and meta.get('content'):
-                src = meta['content']
+
+            # Main image from og:image meta
+            meta_img = soup.find('meta', property='og:image')
+            if meta_img and meta_img.get('content'):
+                image_urls.append(meta_img['content'])
+
+            # Related images
+            related_imgs = [img['src'] for img in soup.find_all('img', src=True) if "i.pinimg.com" in img['src']]
+            for src in related_imgs:
                 if src not in image_urls:
                     image_urls.append(src)
-                    print(f"✅ Found main image: {src}")
-
-            # Collect related pins shown below
-            related_imgs = soup.find_all('img')
-            for img in related_imgs:
-                rel_src = img.get('src') or img.get('data-src')
-                if rel_src and '/736x/' in rel_src and rel_src not in image_urls:
-                    image_urls.append(rel_src)
-                    print(f"🔗 Found related image: {rel_src}")
 
         except Exception as e:
-            print(f"❌ Error loading pin {link}: {e}")
+            print(f"❌ Error processing pin {link}: {e}")
 
     driver.quit()
-    print(f"Collected {len(image_urls)} images including related ones.")
+    print(f"✅ Total collected: {len(image_urls)}")
     return image_urls[:limit]
 
-# Download existing duplicates file from Google Drive
-def download_duplicates_file(service, folder_id):
-    results = service.files().list(
-        q=f"'{folder_id}' in parents and name='downloaded_urls.txt' and trashed=false",
-        fields='files(id,name)'
-    ).execute()
-    items = results.get('files', [])
+# ========== DOWNLOAD TRACKING ==========
 
-    if items:
-        file_id = items[0]['id']
-        request = service.files().get_media(fileId=file_id)
-        with open('downloaded_urls.txt', 'wb') as f:
-            downloader = MediaIoBaseDownload(f, request)
-            done = False
-            while not done:
-                status, done = downloader.next_chunk()
-        print("✅ downloaded_urls.txt retrieved from Drive")
-        return file_id
-    else:
-        print("🆕 No previous duplicate file found")
-        return None
+def load_downloaded_urls(file_path="downloaded_urls.txt"):
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            return set(f.read().splitlines())
+    return set()
 
-# Upload updated duplicates file to Google Drive
-def upload_duplicates_file(service, folder_id, file_id=None):
-    file_metadata = {'name': 'downloaded_urls.txt', 'parents': [folder_id]}
-    media = MediaFileUpload('downloaded_urls.txt', mimetype='text/plain')
-    if file_id:
-        service.files().update(fileId=file_id, media_body=media).execute()
-        print("🔁 Updated duplicates file on Drive")
-    else:
-        service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        print("📤 Uploaded new duplicates file to Drive")
+def save_downloaded_urls(urls, file_path="downloaded_urls.txt"):
+    with open(file_path, "w") as f:
+        f.write("\n".join(urls))
 
-# Main function
+# ========== MAIN LOGIC ==========
+
 def main():
+    query = "cars"
     folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
-    queries = ["cars"]
-    download_limit = 100
+    limit = 100
 
-    credentials_json = os.getenv("SERVICE_ACCOUNT_BASE64")
-    credentials_dict = decode_credentials(credentials_json)
-    credentials = service_account.Credentials.from_service_account_info(credentials_dict)
-    drive_service = build('drive', 'v3', credentials=credentials)
+    print("Authenticating with Google Drive...")
+    creds = load_credentials()
+    drive_service = build("drive", "v3", credentials=creds)
 
-    # Load duplicates
-    dup_file_id = download_duplicates_file(drive_service, folder_id)
+    existing_files = get_drive_file_list(drive_service, folder_id)
     downloaded_urls = load_downloaded_urls()
+    new_downloaded = set()
 
-    os.makedirs("temp_images", exist_ok=True)
+    print("Scraping Pinterest images...")
+    urls = scrape_full_resolution_images(query, limit=limit)
 
-    for query in queries:
-        image_urls = scrape_full_resolution_images(query, download_limit)
-        for idx, url in enumerate(image_urls):
-            if url in downloaded_urls:
-                print(f"⏩ Skipping duplicate: {url}")
-                continue
-            print(f"⬇️ Downloading {idx+1}/{len(image_urls)}: {url}")
-            try:
-                img_data = requests.get(url, timeout=10).content
-                if not is_valid_image(img_data):
-                    print(f"⚠️ Skipping invalid: {url}")
-                    continue
-                img_path = f"temp_images/{query.replace(' ', '_')}_{idx+1}.jpg"
-                with open(img_path, 'wb') as f:
-                    f.write(img_data)
-                upload_to_drive(img_path, folder_id, drive_service)
-                downloaded_urls.add(url)
-                os.remove(img_path)
-            except Exception as e:
-                print(f"❌ Error: {e}")
+    count = 1
+    for url in urls:
+        if url in downloaded_urls:
+            continue
+        if not is_high_quality_image(url):
+            continue
 
+        try:
+            response = requests.get(url, timeout=10)
+            image = Image.open(io.BytesIO(response.content)).convert("RGB")
+            buf = io.BytesIO()
+            image.save(buf, format="JPEG", quality=95)
+            filename = f"{query}_{count}.jpg"
+            if filename not in existing_files:
+                upload_to_drive(drive_service, folder_id, buf.getvalue(), filename)
+                print(f"✅ Uploaded: {filename}")
+                count += 1
+                new_downloaded.add(url)
+        except Exception as e:
+            print(f"❌ Failed to upload {url}: {e}")
+
+    downloaded_urls.update(new_downloaded)
     save_downloaded_urls(downloaded_urls)
-    upload_duplicates_file(drive_service, folder_id, dup_file_id)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
