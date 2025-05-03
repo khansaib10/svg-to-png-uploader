@@ -10,8 +10,7 @@ from googleapiclient.http import MediaIoBaseUpload
 # ——— CONFIG ———
 SERVICE_ACCOUNT_FILE = 'service_account.json'
 DRIVE_FOLDER_ID       = '1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh'
-UNDRAW_JSON_URL       = 'https://raw.githubusercontent.com/cuuupid/undraw-illustrations/master/undraw.json'
-NUM_IMAGES            = 10   # how many illustrations to pull
+NUM_IMAGES            = 10    # total illustrations to grab
 # ——————————
 
 def authenticate_drive():
@@ -22,51 +21,61 @@ def authenticate_drive():
     return build('drive', 'v3', credentials=creds)
 
 def fetch_undraw_catalog():
-    print("Fetching unDraw catalog…")
-    r = requests.get(UNDRAW_JSON_URL, timeout=15)
-    r.raise_for_status()
-    return r.json()  # list of { \"filename\": ..., \"svg\": ... }
+    page = 1
+    all_items = []
+    print("Fetching unDraw catalog via API…")
+    while True:
+        url = f"https://undraw.co/api/illustrations?page={page}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        for item in data['illos']:
+            # each item has 'title' (string) and 'image' (SVG URL)
+            all_items.append({
+                'title': item['title'],
+                'svg_url': item['image']
+            })
+        if not data.get('hasMore'):
+            break
+        page = data.get('nextPage')
+    print(f"• Catalog size: {len(all_items)} illustrations")
+    return all_items
 
-def download_svg(svg_url):
-    r = requests.get(svg_url, timeout=15)
-    if r.status_code == 200 and r.content.strip().startswith(b'<svg'):
-        return r.content
-    print(f" ⚠️ Failed to download or invalid SVG: {svg_url}")
-    return None
+def download_and_convert(svg_url):
+    resp = requests.get(svg_url, timeout=15)
+    if resp.status_code != 200 or not resp.content.strip().startswith(b'<svg'):
+        print(f" ⚠️ Bad SVG at {svg_url}, skipping")
+        return None
+    return cairosvg.svg2png(
+        bytestring=resp.content,
+        output_width=1200,
+        output_height=1600
+    )
 
-def convert_to_png(svg_bytes):
-    return cairosvg.svg2png(bytestring=svg_bytes,
-                            output_width=1200,
-                            output_height=1600)
-
-def upload_png(data_bytes, filename, drive):
-    print(f"Uploading {filename}…")
-    media = MediaIoBaseUpload(io.BytesIO(data_bytes), mimetype='image/png')
-    meta  = {'name': filename, 'parents': [DRIVE_FOLDER_ID]}
+def upload_png(data, name, drive):
+    print(f"Uploading {name}…")
+    media = MediaIoBaseUpload(io.BytesIO(data), mimetype='image/png')
+    meta  = {'name': name, 'parents': [DRIVE_FOLDER_ID]}
     drive.files().create(body=meta, media_body=media, fields='id').execute()
-    print(f" ✔️ {filename} uploaded")
+    print(f" ✔️ {name} uploaded")
 
 def main():
-    # prepare
     os.makedirs('temp', exist_ok=True)
     drive = authenticate_drive()
 
-    # get catalog & pick images
     catalog = fetch_undraw_catalog()
-    random.shuffle(catalog)   # randomize for variety
+    random.shuffle(catalog)
     selection = catalog[:NUM_IMAGES]
 
     for entry in selection:
-        name   = entry['filename'] + '.png'
-        svg_url= entry['svg']
-        print(f"\nProcessing illustration: {entry['filename']}")
-        svg = download_svg(svg_url)
-        if not svg:
+        fname = entry['title'].lower().replace(' ', '_') + '.png'
+        print(f"\nProcessing illustration: {entry['title']}")
+        png_data = download_and_convert(entry['svg_url'])
+        if not png_data:
             continue
-        png = convert_to_png(svg)
-        upload_png(png, name, drive)
+        upload_png(png_data, fname, drive)
 
-    print("\nAll done!")
+    print("\nAll done.")
 
 if __name__ == '__main__':
     main()
