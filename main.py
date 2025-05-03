@@ -94,7 +94,7 @@ def get_pin_page_urls(query, driver, limit=50):
 # Main logic
 def main():
     folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
-    queries = ["bike", "bike lovers", "Harley Davidson bike", "motorbike", "heavy bikes"]
+    queries = ["ai girl", "ai girls"]
     base64_credentials = os.getenv("SERVICE_ACCOUNT_BASE64")
     download_limit_per_query = 30
     downloaded_urls = set()
