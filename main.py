@@ -15,25 +15,21 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from PIL import Image
 from io import BytesIO
 
-# Decode base64 service account credentials
 def decode_credentials(base64_credentials):
     print("Decoding credentials...")
     decoded_bytes = base64.b64decode(base64_credentials)
     return json.loads(decoded_bytes)
 
-# Load downloaded URLs from file
 def load_downloaded_urls():
     if os.path.exists("downloaded_urls.txt"):
         with open("downloaded_urls.txt", "r") as f:
             return set(f.read().splitlines())
     return set()
 
-# Save downloaded URLs to file
 def save_downloaded_urls(urls):
     with open("downloaded_urls.txt", "w") as f:
         f.write("\n".join(urls))
 
-# Upload image to Google Drive
 def upload_to_drive(file_path, folder_id, drive_service):
     print(f"Uploading {file_path} to Google Drive...")
     file_metadata = {'name': os.path.basename(file_path), 'parents': [folder_id]}
@@ -41,7 +37,6 @@ def upload_to_drive(file_path, folder_id, drive_service):
     drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
     print(f"Uploaded {file_path}")
 
-# Check if image is portrait and high-quality
 def is_valid_image(image_data, min_size_kb=20):
     try:
         img = Image.open(BytesIO(image_data))
@@ -53,7 +48,6 @@ def is_valid_image(image_data, min_size_kb=20):
         print(f"Image validation error: {e}")
         return False
 
-# Scrape Pinterest: top-page images + main pin images
 def scrape_full_resolution_images(query, limit=100):
     print(f"Scraping Pinterest for query: {query}")
     search_url = f"https://www.pinterest.com/search/pins/?q={query.replace(' ', '%20')}"
@@ -63,7 +57,9 @@ def scrape_full_resolution_images(query, limit=100):
     opts.add_argument('--disable-dev-shm-usage')
     driver = webdriver.Chrome(options=opts)
     driver.get(search_url)
-    time.sleep(5)
+
+    # Wait to let top results fully render
+    time.sleep(4)
 
     seen = set()
     results = []
@@ -101,14 +97,18 @@ def scrape_full_resolution_images(query, limit=100):
 
     print(f"Found {len(pin_links)} pin links.")
 
-    # 3. Visit pins for main og:image
+    # 3. Visit each pin and get main image + related high-res images
     for link in list(pin_links)[:limit]:
         if len(results) >= limit:
             break
         try:
             driver.get(link)
             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, 'img')))
+            time.sleep(2)  # Allow full content below the pin to load
+
             soup = BeautifulSoup(driver.page_source, 'html.parser')
+
+            # Main og:image
             meta = soup.find('meta', property='og:image')
             if meta:
                 src = meta.get('content')
@@ -116,6 +116,18 @@ def scrape_full_resolution_images(query, limit=100):
                     seen.add(src)
                     results.append(src)
                     print(f"✅ Pin image: {src}")
+
+            # Related visible large images only
+            for img in soup.find_all('img', src=True):
+                src = img['src']
+                if ('/736x/' in src or '/originals/' in src) and 'i.pinimg.com' in src:
+                    if src not in seen:
+                        seen.add(src)
+                        results.append(src)
+                        print(f"➕ Related large image: {src}")
+                if len(results) >= limit:
+                    break
+
         except Exception as e:
             print(f"Error loading pin {link}: {e}")
 
@@ -123,7 +135,6 @@ def scrape_full_resolution_images(query, limit=100):
     print(f"Collected {len(results)} high-quality images.")
     return results[:limit]
 
-# Download existing duplicates file from Google Drive
 def download_duplicates_file(service, folder_id):
     res = service.files().list(
         q=f"'{folder_id}' in parents and name='downloaded_urls.txt' and trashed=false",
@@ -143,7 +154,6 @@ def download_duplicates_file(service, folder_id):
     print("🆕 No previous duplicate file found")
     return None
 
-# Upload updated duplicates file to Google Drive
 def upload_duplicates_file(service, folder_id, file_id=None):
     meta = {'name': 'downloaded_urls.txt', 'parents': [folder_id]}
     media = MediaFileUpload('downloaded_urls.txt', mimetype='text/plain')
@@ -154,10 +164,9 @@ def upload_duplicates_file(service, folder_id, file_id=None):
         service.files().create(body=meta, media_body=media, fields='id').execute()
         print("📤 Uploaded new duplicates file to Drive")
 
-# Main function
 def main():
     folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
-    queries = ["cars"]
+    queries = ["cars"]  # Add more if needed
     download_limit = 100
 
     creds_b64 = os.getenv("SERVICE_ACCOUNT_BASE64")
