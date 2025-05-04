@@ -35,8 +35,7 @@ def upload_to_drive(local_path, folder_id, drive_service):
 def download_duplicates_file(drive_service, folder_id):
     q = f"'{folder_id}' in parents and name='downloaded_urls.txt' and trashed=false"
     res = drive_service.files().list(q=q, fields='files(id)').execute().get('files',[])
-    if not res:
-        return None
+    if not res: return None
     fid = res[0]['id']
     req = drive_service.files().get_media(fileId=fid)
     with open("downloaded_urls.txt","wb") as f:
@@ -48,7 +47,7 @@ def download_duplicates_file(drive_service, folder_id):
 
 def upload_duplicates_file(drive_service, folder_id, file_id):
     media = MediaFileUpload("downloaded_urls.txt", mimetype='text/plain')
-    meta = {'name': 'downloaded_urls.txt', 'parents': [folder_id]}
+    meta = {'name':'downloaded_urls.txt','parents':[folder_id]}
     if file_id:
         drive_service.files().update(fileId=file_id, media_body=media).execute()
     else:
@@ -72,14 +71,14 @@ def scrape_top_pins(query: str, limit: int = 50):
     driver = webdriver.Chrome(options=opts)
     driver.get(url)
 
-    # Wait until at least one pin link appears
-    WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/pin/']"))
+    # Wait for the feed of pins to appear
+    WebDriverWait(driver, 15).until(
+        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div[role='feed'] a[href*='/pin/']"))
     )
-    time.sleep(2)  # give it a moment to load the rest of the top pins
+    time.sleep(2)  # allow a moment for all top pins to load
 
-    # Grab the first `limit` unique pin URLs
-    anchors = driver.find_elements(By.CSS_SELECTOR, "a[href*='/pin/']")
+    # Collect first `limit` unique pin URLs from the feed container
+    anchors = driver.find_elements(By.CSS_SELECTOR, "div[role='feed'] a[href*='/pin/']")
     pin_links = []
     for a in anchors:
         href = a.get_attribute("href").split('?')[0]
@@ -88,10 +87,10 @@ def scrape_top_pins(query: str, limit: int = 50):
         if len(pin_links) >= limit:
             break
 
-    print(f"🖼 Found {len(pin_links)} top pins.")
+    print(f"🖼 Found {len(pin_links)} top pins for '{query}'")
     results, seen = [], set()
 
-    # Visit each pin for its og:image
+    # Visit each pin and fetch its full-res image via og:image
     for link in pin_links:
         if len(results) >= limit:
             break
@@ -106,7 +105,7 @@ def scrape_top_pins(query: str, limit: int = 50):
                 results.append(src)
                 print("✅", src)
         except Exception as e:
-            print("⚠️", link, e)
+            print("⚠️ Error on", link, ":", e)
 
     driver.quit()
     return results[:limit]
@@ -131,21 +130,22 @@ def main():
         urls = scrape_top_pins(q, limit)
         for idx, url in enumerate(urls, 1):
             if url in downloaded:
-                print("⏩ duplicate", url)
+                print("⏩ Duplicate", url)
                 continue
-            print("⬇️", url)
+            print("⬇️ Downloading", url)
             try:
                 data = requests.get(url, timeout=10).content
                 if not is_portrait(data):
-                    print("⚠️ not portrait", url)
+                    print("⚠️ Skipped (not portrait)", url)
                     continue
-                path = f"temp_images/{q.replace(' ','_')}_{idx}.jpg"
-                open(path,'wb').write(data)
+                path = f"temp_images/{q.replace(' ', '_')}_{idx}.jpg"
+                with open(path, 'wb') as f:
+                    f.write(data)
                 upload_to_drive(path, folder_id, drive)
                 downloaded.add(url)
                 os.remove(path)
             except Exception as e:
-                print("❌", e)
+                print("❌ Error downloading", url, ":", e)
 
     save_downloaded_urls(downloaded)
     upload_duplicates_file(drive, folder_id, dup_id)
