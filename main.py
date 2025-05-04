@@ -15,7 +15,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
-# ——— Helpers ——————————————————————————————————————————————————————————
+# — Helpers ——————————————————————————————————————————————————————————
 
 def decode_credentials(b64: str):
     return json.loads(base64.b64decode(b64))
@@ -34,7 +34,7 @@ def upload_to_drive(local_path, folder_id, drive_service):
 
 def download_duplicates_file(drive_service, folder_id):
     q = f"'{folder_id}' in parents and name='downloaded_urls.txt' and trashed=false"
-    res = drive_service.files().list(q=q, fields='files(id)').execute().get('files', [])
+    res = drive_service.files().list(q=q, fields='files(id)').execute().get('files',[])
     if not res:
         return None
     fid = res[0]['id']
@@ -61,36 +61,37 @@ def is_portrait(image_data: bytes):
     except:
         return False
 
-# ——— Scraper ——————————————————————————————————————————————————————————
+# — Scraper ——————————————————————————————————————————————————————————
 
-def scrape_top_images(query: str, limit: int = 50):
-    search_url = f"https://www.pinterest.com/search/pins/?q={query.replace(' ', '%20')}"
+def scrape_top_pins(query: str, limit: int = 50):
+    url = f"https://www.pinterest.com/search/pins/?q={query.replace(' ', '%20')}"
     opts = Options()
     opts.add_argument('--headless')
     opts.add_argument('--no-sandbox')
     opts.add_argument('--disable-dev-shm-usage')
     driver = webdriver.Chrome(options=opts)
-    driver.get(search_url)
-    time.sleep(5)  # wait for top pins to render
+    driver.get(url)
 
-    # Find visible <img> tags, ascend to their <a> pin link
+    # Wait until at least one pin link appears
+    WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/pin/']"))
+    )
+    time.sleep(2)  # give it a moment to load the rest of the top pins
+
+    # Grab the first `limit` unique pin URLs
+    anchors = driver.find_elements(By.CSS_SELECTOR, "a[href*='/pin/']")
     pin_links = []
-    imgs = driver.find_elements(By.CSS_SELECTOR, "img[srcset]")
-    for img_el in imgs:
-        try:
-            a = img_el.find_element(By.XPATH, "./ancestor::a[contains(@href,'/pin/')]")
-            href = a.get_attribute("href").split('?')[0]
-            if href not in pin_links:
-                pin_links.append(href)
-            if len(pin_links) >= limit:
-                break
-        except:
-            continue
+    for a in anchors:
+        href = a.get_attribute("href").split('?')[0]
+        if href not in pin_links:
+            pin_links.append(href)
+        if len(pin_links) >= limit:
+            break
 
-    print(f"🖼 Found {len(pin_links)} top pins for '{query}'")
-    results = []
-    seen = set()
+    print(f"🖼 Found {len(pin_links)} top pins.")
+    results, seen = [], set()
 
+    # Visit each pin for its og:image
     for link in pin_links:
         if len(results) >= limit:
             break
@@ -99,7 +100,8 @@ def scrape_top_images(query: str, limit: int = 50):
             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, 'head')))
             soup = BeautifulSoup(driver.page_source, 'html.parser')
             meta = soup.find('meta', property='og:image')
-            if meta and (src := meta.get('content')) and src not in seen:
+            src = meta.get('content') if meta else None
+            if src and src not in seen:
                 seen.add(src)
                 results.append(src)
                 print("✅", src)
@@ -109,7 +111,7 @@ def scrape_top_images(query: str, limit: int = 50):
     driver.quit()
     return results[:limit]
 
-# ——— Main ——————————————————————————————————————————————————————————
+# — Main ——————————————————————————————————————————————————————————
 
 def main():
     folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
@@ -126,7 +128,7 @@ def main():
     os.makedirs("temp_images", exist_ok=True)
 
     for q in queries:
-        urls = scrape_top_images(q, limit)
+        urls = scrape_top_pins(q, limit)
         for idx, url in enumerate(urls, 1):
             if url in downloaded:
                 print("⏩ duplicate", url)
@@ -138,8 +140,7 @@ def main():
                     print("⚠️ not portrait", url)
                     continue
                 path = f"temp_images/{q.replace(' ','_')}_{idx}.jpg"
-                with open(path,'wb') as f:
-                    f.write(data)
+                open(path,'wb').write(data)
                 upload_to_drive(path, folder_id, drive)
                 downloaded.add(url)
                 os.remove(path)
