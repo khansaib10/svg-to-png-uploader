@@ -53,8 +53,8 @@ def is_valid_image(image_data, min_size_kb=20):
         print(f"Image validation error: {e}")
         return False
 
-# Scrape Pinterest: top-page images + main pin images
-def scrape_full_resolution_images(query, limit=100):
+# Scrape Pinterest: first 50 pins
+def scrape_full_resolution_images(query, limit=50):
     print(f"Scraping Pinterest for query: {query}")
     search_url = f"https://www.pinterest.com/search/pins/?q={query.replace(' ', '%20')}"
     opts = Options()
@@ -63,49 +63,25 @@ def scrape_full_resolution_images(query, limit=100):
     opts.add_argument('--disable-dev-shm-usage')
     driver = webdriver.Chrome(options=opts)
     driver.get(search_url)
-    time.sleep(7)  # Wait for search results to load properly
-
-    # Slight scroll to trigger lazy loading of more pins
-    driver.execute_script("window.scrollBy(0, 1000);")
-    time.sleep(3)
+    time.sleep(5)  # Wait for search results to load properly
 
     seen = set()
     results = []
 
-    # 1. Top-page high-quality images via srcset
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
-    for img in soup.find_all('img', srcset=True):
-        parts = [p.strip().split(' ')[0] for p in img['srcset'].split(',')]
-        try:
-            best = max(parts, key=lambda u: int(u.split('/')[-1].split('x')[0]))
-        except:
-            best = parts[-1]
-        if 'i.pinimg.com' in best and best not in seen:
-            seen.add(best)
-            results.append(best)
-            print(f"🔝 Top search image: {best}")
-        if len(results) >= limit:
-            break
-
-    # 2. Collect pin links by infinite scroll
+    # 1. Get the first 50 visible pin links
     pin_links = set()
-    last_h = driver.execute_script("return document.body.scrollHeight")
-    while len(pin_links) < limit * 2:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(3)
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        for a in soup.find_all('a', href=True):
-            h = a['href']
-            if '/pin/' in h:
-                pin_links.add('https://www.pinterest.com' + h.split('?')[0])
-        nh = driver.execute_script("return document.body.scrollHeight")
-        if nh == last_h:
-            break
-        last_h = nh
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    pins = soup.find_all('a', href=True)
+
+    # Filter the first 50 pins
+    for a in pins[:limit]:
+        h = a['href']
+        if '/pin/' in h:
+            pin_links.add('https://www.pinterest.com' + h.split('?')[0])
 
     print(f"Found {len(pin_links)} pin links.")
 
-    # 3. Visit pins for main og:image
+    # 2. Visit each pin for full resolution image
     for link in list(pin_links)[:limit]:
         if len(results) >= limit:
             break
@@ -162,7 +138,7 @@ def upload_duplicates_file(service, folder_id, file_id=None):
 def main():
     folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
     queries = ["cars"]
-    download_limit = 100
+    download_limit = 50
 
     creds_b64 = os.getenv("SERVICE_ACCOUNT_BASE64")
     creds = service_account.Credentials.from_service_account_info(decode_credentials(creds_b64))
