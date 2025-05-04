@@ -3,104 +3,113 @@ import time
 import base64
 import json
 import requests
+from io import BytesIO
+from PIL import Image
+from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from bs4 import BeautifulSoup
-from PIL import Image
-from io import BytesIO
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
-# Decode credentials
-def decode_credentials(b64):
+# ——— Helpers ——————————————————————————————————————————————————————————
+
+def decode_credentials(b64: str):
     return json.loads(base64.b64decode(b64))
 
-# Load/save duplicates
-def load_downloaded_urls():
-    return set(open("downloaded_urls.txt").read().splitlines()) if os.path.exists("downloaded_urls.txt") else set()
-def save_downloaded_urls(urls):
-    open("downloaded_urls.txt","w").write("\n".join(urls))
+def load_downloaded_urls(path="downloaded_urls.txt"):
+    return set(open(path).read().splitlines()) if os.path.exists(path) else set()
 
-# Upload to Drive
-def upload_to_drive(path, folder_id, drive):
-    meta = {'name':os.path.basename(path),'parents':[folder_id]}
-    media = MediaFileUpload(path, mimetype='image/jpeg')
-    drive.files().create(body=meta, media_body=media, fields='id').execute()
+def save_downloaded_urls(urls, path="downloaded_urls.txt"):
+    with open(path, "w") as f:
+        f.write("\n".join(urls))
 
-# Simple portrait filter
-def is_portrait(image_data):
+def upload_to_drive(local_path, folder_id, drive_service):
+    meta = {'name': os.path.basename(local_path), 'parents': [folder_id]}
+    media = MediaFileUpload(local_path, mimetype='image/jpeg')
+    drive_service.files().create(body=meta, media_body=media, fields='id').execute()
+
+def download_duplicates_file(drive_service, folder_id):
+    q = f"'{folder_id}' in parents and name='downloaded_urls.txt' and trashed=false"
+    res = drive_service.files().list(q=q, fields='files(id)').execute().get('files', [])
+    if not res:
+        return None
+    fid = res[0]['id']
+    req = drive_service.files().get_media(fileId=fid)
+    with open("downloaded_urls.txt","wb") as f:
+        dl = MediaIoBaseDownload(f, req)
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
+    return fid
+
+def upload_duplicates_file(drive_service, folder_id, file_id):
+    media = MediaFileUpload("downloaded_urls.txt", mimetype='text/plain')
+    meta = {'name': 'downloaded_urls.txt', 'parents': [folder_id]}
+    if file_id:
+        drive_service.files().update(fileId=file_id, media_body=media).execute()
+    else:
+        drive_service.files().create(body=meta, media_body=media, fields='id').execute()
+
+def is_portrait(image_data: bytes):
     try:
         w,h = Image.open(BytesIO(image_data)).size
-        return h> w
+        return h > w
     except:
         return False
 
-def scrape_pins(query, limit=50):
-    url = f"https://www.pinterest.com/search/pins/?q={query.replace(' ','%20')}"
+# ——— Scraper ——————————————————————————————————————————————————————————
+
+def scrape_top_images(query: str, limit: int = 50):
+    search_url = f"https://www.pinterest.com/search/pins/?q={query.replace(' ', '%20')}"
     opts = Options()
     opts.add_argument('--headless')
     opts.add_argument('--no-sandbox')
     opts.add_argument('--disable-dev-shm-usage')
     driver = webdriver.Chrome(options=opts)
-    driver.get(url)
-    time.sleep(5)  # let top pins load
+    driver.get(search_url)
+    time.sleep(5)  # wait for top pins to render
 
-    # grab first 50 pin links without scrolling
-    elems = driver.find_elements(By.CSS_SELECTOR,'a[href*="/pin/"]')
+    # Find visible <img> tags, ascend to their <a> pin link
     pin_links = []
-    for e in elems:
-        href = e.get_attribute("href").split('?')[0]
-        if href not in pin_links:
-            pin_links.append(href)
-        if len(pin_links)>=limit:
-            break
+    imgs = driver.find_elements(By.CSS_SELECTOR, "img[srcset]")
+    for img_el in imgs:
+        try:
+            a = img_el.find_element(By.XPATH, "./ancestor::a[contains(@href,'/pin/')]")
+            href = a.get_attribute("href").split('?')[0]
+            if href not in pin_links:
+                pin_links.append(href)
+            if len(pin_links) >= limit:
+                break
+        except:
+            continue
 
-    print(f"Found {len(pin_links)} top pins.")
+    print(f"🖼 Found {len(pin_links)} top pins for '{query}'")
     results = []
+    seen = set()
+
     for link in pin_links:
+        if len(results) >= limit:
+            break
         try:
             driver.get(link)
-            WebDriverWait(driver,10).until(EC.presence_of_element_located((By.TAG_NAME,'head')))
-            soup = BeautifulSoup(driver.page_source,'html.parser')
-            meta = soup.find('meta',property='og:image')
-            if meta:
-                src = meta['content']
-                if src not in results:
-                    results.append(src)
-                    print("✅", src)
-            if len(results)>=limit:
-                break
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, 'head')))
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            meta = soup.find('meta', property='og:image')
+            if meta and (src := meta.get('content')) and src not in seen:
+                seen.add(src)
+                results.append(src)
+                print("✅", src)
         except Exception as e:
             print("⚠️", link, e)
 
     driver.quit()
-    return results
+    return results[:limit]
 
-def download_duplicates_file(drive, folder_id):
-    q = f"'{folder_id}' in parents and name='downloaded_urls.txt' and trashed=false"
-    res = drive.files().list(q=q, fields='files(id)').execute().get('files',[])
-    if res:
-        fid = res[0]['id']
-        req = drive.files().get_media(fileId=fid)
-        with open('downloaded_urls.txt','wb') as f:
-            downloader = MediaIoBaseDownload(f,req)
-            done=False
-            while not done:
-                _,done = downloader.next_chunk()
-        return fid
-    return None
-
-def upload_duplicates_file(drive, folder_id, file_id):
-    media = MediaFileUpload('downloaded_urls.txt',mimetype='text/plain')
-    meta = {'name':'downloaded_urls.txt','parents':[folder_id]}
-    if file_id:
-        drive.files().update(fileId=file_id, media_body=media).execute()
-    else:
-        drive.files().create(body=meta, media_body=media, fields='id').execute()
+# ——— Main ——————————————————————————————————————————————————————————
 
 def main():
     folder_id = "1jnHnezrLNTl3ebmlt2QRBDSQplP_Q4wh"
@@ -114,28 +123,31 @@ def main():
 
     dup_id = download_duplicates_file(drive, folder_id)
     downloaded = load_downloaded_urls()
-    os.makedirs("temp_images",exist_ok=True)
+    os.makedirs("temp_images", exist_ok=True)
 
     for q in queries:
-        urls = scrape_pins(q,limit)
-        for i,url in enumerate(urls,1):
+        urls = scrape_top_images(q, limit)
+        for idx, url in enumerate(urls, 1):
             if url in downloaded:
-                print("⏩ duplicate",url); continue
-            print("⬇️",url)
+                print("⏩ duplicate", url)
+                continue
+            print("⬇️", url)
             try:
-                data = requests.get(url,timeout=10).content
+                data = requests.get(url, timeout=10).content
                 if not is_portrait(data):
-                    print("⚠️ not portrait",url); continue
-                path = f"temp_images/{q}_{i}.jpg"
-                open(path,'wb').write(data)
-                upload_to_drive(path,folder_id,drive)
+                    print("⚠️ not portrait", url)
+                    continue
+                path = f"temp_images/{q.replace(' ','_')}_{idx}.jpg"
+                with open(path,'wb') as f:
+                    f.write(data)
+                upload_to_drive(path, folder_id, drive)
                 downloaded.add(url)
                 os.remove(path)
             except Exception as e:
-                print("❌",e)
+                print("❌", e)
 
     save_downloaded_urls(downloaded)
-    upload_duplicates_file(drive,folder_id,dup_id)
+    upload_duplicates_file(drive, folder_id, dup_id)
 
-if __name__=='__main__':
+if __name__ == "__main__":
     main()
